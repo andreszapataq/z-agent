@@ -131,25 +131,25 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
 
       let toolResult = "";
       try {
-        const i: any = toolUse.input;
+        const input: any = toolUse.input;
         switch (toolUse.name) {
           case "search_contact":
-            toolResult = JSON.stringify(await crm.searchContact(i.query));
+            toolResult = JSON.stringify(await crm.searchContact(input.query));
             break;
           case "create_contact":
-            toolResult = JSON.stringify(await crm.createContact(i));
+            toolResult = JSON.stringify(await crm.createContact(input));
             break;
           case "search_deal":
-            toolResult = JSON.stringify(await crm.searchDeal(i.query));
+            toolResult = JSON.stringify(await crm.searchDeal(input.query));
             break;
           case "move_deal":
-            toolResult = await crm.moveDeal(i.deal_id, i.stage as DealStage);
+            toolResult = await crm.moveDeal(input.deal_id, input.stage as DealStage);
             break;
           case "create_note":
-            toolResult = await crm.createNote(i.contact_id, i.note);
+            toolResult = await crm.createNote(input.contact_id, input.note);
             break;
           case "create_task":
-            toolResult = await crm.createTask(i.contact_id, i.title, i.due_date);
+            toolResult = await crm.createTask(input.contact_id, input.title, input.due_date);
             break;
           default:
             toolResult = `Tool desconocido: ${toolUse.name}`;

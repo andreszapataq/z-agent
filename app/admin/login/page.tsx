@@ -15,9 +15,10 @@ export default function LoginPage() {
     setLoading(true);
     setError("");
 
-    // Verifica el secret pidiendo /api/admin/tenants
-    const res = await fetch("/api/admin/tenants", {
-      headers: { "x-admin-secret": secret },
+    const res = await fetch("/api/admin/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret }),
     });
 
     if (res.ok) {

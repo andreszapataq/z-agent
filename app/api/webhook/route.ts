@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTenantByPhone } from "@/lib/tenants";
 import { processMessage } from "@/lib/agent";
-import { sendWhatsAppMessage } from "@/lib/whatsapp";
+import { sendWhatsAppMessage, verifyMetaSignature } from "@/lib/whatsapp";
 
 // Meta requiere verificación inicial del webhook (GET)
 export async function GET(req: NextRequest) {
@@ -18,7 +18,21 @@ export async function GET(req: NextRequest) {
 
 // Mensajes entrantes (POST)
 export async function POST(req: NextRequest) {
-  const body = await req.json();
+  // Leer el body como texto para poder verificar la firma sobre el cuerpo crudo
+  const rawBody = await req.text();
+  const signature = req.headers.get("x-hub-signature-256");
+
+  if (!verifyMetaSignature(rawBody, signature)) {
+    console.warn("[webhook] firma inválida o ausente");
+    return new NextResponse("Forbidden", { status: 403 });
+  }
+
+  let body: any;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return new NextResponse("Bad Request", { status: 400 });
+  }
 
   // Procesar de forma asíncrona — Meta debe recibir 200 rápido
   processIncomingMessage(body).catch((err) =>

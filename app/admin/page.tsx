@@ -60,9 +60,13 @@ export default function AdminPage() {
       const res = await fetch("/api/admin/tenants", {
         headers: { "x-admin-secret": secret },
       });
-      if (!res.ok) {
+      if (res.status === 401) {
         sessionStorage.removeItem("z-admin-secret");
         router.push("/admin/login");
+        return;
+      }
+      if (!res.ok) {
+        showToast("Error cargando clientes", "error");
         return;
       }
       const data = await res.json();
