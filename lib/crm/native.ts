@@ -67,6 +67,29 @@ export class NativeAdapter implements CrmAdapter {
     }));
   }
 
+  async createDeal(input: { contactId: string; name: string; amount?: number; stage?: DealStage }): Promise<Deal> {
+    const { data, error } = await this.supabase
+      .from("deals")
+      .insert({
+        tenant_id: this.tenantId,
+        contact_id: input.contactId,
+        name: input.name,
+        amount: input.amount,
+        stage: input.stage || "saludo",
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+    return {
+      id: data.id,
+      name: data.name,
+      stage: data.stage,
+      amount: data.amount,
+      contactId: data.contact_id,
+    };
+  }
+
   async moveDeal(dealId: string, stage: DealStage): Promise<string> {
     const { error } = await this.supabase
       .from("deals")

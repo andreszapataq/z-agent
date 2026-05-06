@@ -22,9 +22,11 @@ export default function LoginPage() {
     });
 
     if (res.ok) {
-      // Guarda el secret en sessionStorage (solo este tab)
-      sessionStorage.setItem("z-admin-secret", secret);
+      // La cookie HttpOnly la setea el server. No tocamos sessionStorage.
       router.push("/admin");
+    } else if (res.status === 429) {
+      setError("Demasiados intentos. Espera unos minutos.");
+      setLoading(false);
     } else {
       setError("Contraseña incorrecta");
       setLoading(false);

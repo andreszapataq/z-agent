@@ -10,6 +10,16 @@ export type Tenant = {
   owner_number: string | null;
   hubspot_token: string | null;
   system_prompt: string | null;
+
+  // Notificación proactiva al cliente cuando un deal entra a "propuesta"
+  proposal_stage_id: string | null;
+  proposal_template_name: string | null;
+  proposal_template_lang: string | null;
+  last_polled_at: string | null;
+
+  // Mapeo etapa-en-español → stageId real del pipeline custom de cada tenant
+  stage_map: Record<string, string> | null;
+
   created_at: string;
   updated_at: string;
 };

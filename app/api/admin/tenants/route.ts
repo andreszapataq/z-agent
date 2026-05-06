@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAllTenants, saveTenant } from "@/lib/tenants";
+import { isAuthenticated } from "@/lib/admin-auth";
+import { tenantCreateSchema } from "@/lib/schemas";
 
-function checkAuth(req: NextRequest) {
-  return req.headers.get("x-admin-secret") === process.env.ADMIN_SECRET;
-}
+export const maxDuration = 30;
 
 export async function GET(req: NextRequest) {
-  if (!checkAuth(req)) {
+  if (!isAuthenticated(req)) {
     return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
   const tenants = await getAllTenants();
@@ -14,20 +14,29 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!checkAuth(req)) {
+  if (!isAuthenticated(req)) {
     return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
+  let body: unknown;
   try {
-    const body = await req.json();
-    if (!body.id || !body.name) {
-      return NextResponse.json(
-        { error: "id y name son requeridos" },
-        { status: 400 }
-      );
-    }
-    const saved = await saveTenant(body);
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Bad request" }, { status: 400 });
+  }
+
+  const parsed = tenantCreateSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Datos inválidos", issues: parsed.error.flatten() },
+      { status: 400 }
+    );
+  }
+
+  try {
+    const saved = await saveTenant(parsed.data);
     return NextResponse.json(saved, { status: 201 });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error("[admin/tenants POST]", err);
+    return NextResponse.json({ error: "Error guardando tenant" }, { status: 500 });
   }
 }

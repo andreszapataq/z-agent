@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTenantByPhone } from "@/lib/tenants";
 import { processMessage } from "@/lib/agent";
 import { sendWhatsAppMessage, verifyMetaSignature } from "@/lib/whatsapp";
+import { checkLimit, webhookLimiter } from "@/lib/ratelimit";
 
 // Meta requiere verificación inicial del webhook (GET)
 export async function GET(req: NextRequest) {
@@ -49,6 +50,13 @@ async function processIncomingMessage(body: any) {
 
   if (!message || message.type !== "text") return;
   if (!phoneNumberId) return;
+
+  // Rate limit por phone_number_id (tenant). Si excede, no procesamos.
+  const limit = await checkLimit(webhookLimiter, phoneNumberId);
+  if (!limit.ok) {
+    console.warn("[webhook] rate limit excedido para", phoneNumberId);
+    return;
+  }
 
   const tenant = await getTenantByPhone(phoneNumberId);
   if (!tenant) return;

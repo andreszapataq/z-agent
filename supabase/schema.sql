@@ -1,6 +1,10 @@
 -- ============================================================
--- Z-Agent · Supabase schema
+-- Z-Agent · Supabase schema (snapshot consolidado)
 -- Multi-tenant WhatsApp AI Agent with multi-CRM support
+-- ============================================================
+-- NOTA: La fuente de verdad para nuevos despliegues es la carpeta
+-- `supabase/migrations/`. Este archivo se mantiene como snapshot
+-- consolidado del schema para referencia rápida.
 -- ============================================================
 
 -- ─── TENANTS ──────────────────────────────────────────────

@@ -6,8 +6,9 @@ Multi-tenant WhatsApp AI Agent con soporte para múltiples CRMs.
 
 - **Next.js 15** (App Router, Server Components)
 - **Supabase** (PostgreSQL + Auth)
-- **Claude Sonnet 4** (Agente con tool use)
+- **OpenAI gpt-4.1-mini** (Agente con tool use — configurable vía `OPENAI_MODEL`)
 - **Meta WhatsApp Business API** (mensajería)
+- **Upstash Redis** (rate limiting)
 - **Vercel** (hosting)
 
 ## Tipos de cliente soportados
@@ -42,7 +43,8 @@ z-agent/
 │       ├── native.ts                 ← Adapter Supabase nativo
 │       └── index.ts                  ← Factory
 ├── supabase/
-│   └── schema.sql                    ← Schema completo
+│   ├── schema.sql                    ← Snapshot consolidado (referencia)
+│   └── migrations/                   ← Migraciones versionadas (fuente de verdad)
 ├── .env.local.example
 └── package.json
 ```
@@ -59,21 +61,32 @@ npm install
 
 1. Ve a [supabase.com](https://supabase.com) → New Project
 2. Cuando esté listo, ve a **SQL Editor**
-3. Pega el contenido de `supabase/schema.sql` y ejecuta
+3. Pega el contenido de `supabase/migrations/20260504000001_initial_schema.sql` y ejecuta
+   (o usa Supabase CLI: `supabase db push`)
 4. Ve a **Settings → API** y copia:
    - Project URL
    - anon (public) key
    - service_role (secret) key
 
-### 3. Configurar variables de entorno
+### 3. Crear DB de Upstash Redis (rate limiting)
+
+1. Ve a [console.upstash.com/redis](https://console.upstash.com/redis) → Create Database
+2. Region: la más cercana a tu deploy de Vercel
+3. Copia **REST URL** y **REST Token**
+
+### 4. Configurar variables de entorno
 
 ```bash
 cp .env.local.example .env.local
 ```
 
-Edita `.env.local` con tus valores.
+Edita `.env.local` con tus valores. Genera secrets con:
 
-### 4. Correr en local
+```bash
+openssl rand -hex 32   # ADMIN_SECRET, WEBHOOK_VERIFY_TOKEN
+```
+
+### 5. Correr en local
 
 ```bash
 npm run dev
@@ -81,7 +94,7 @@ npm run dev
 
 Abre [http://localhost:3000](http://localhost:3000) — te redirige a `/admin`.
 
-### 5. Deploy a Vercel
+### 6. Deploy a Vercel
 
 ```bash
 git init
@@ -93,10 +106,36 @@ git push -u origin main
 
 En Vercel: Import repo → agregar las variables de entorno → Deploy.
 
-### 6. Webhook en Meta Developers
+### 7. Webhook en Meta Developers
 
 URL: `https://tu-proyecto.vercel.app/api/webhook`
 Token de verificación: el valor de `WEBHOOK_VERIFY_TOKEN`.
+
+### 8. (Opcional) Notificación de propuesta vía WhatsApp
+
+Cuando un deal entra a la etapa "Propuesta enviada" en HubSpot, el sistema envía un WhatsApp automático al cliente. Para habilitarlo:
+
+**8.1 Crear plantilla en Meta Business Manager**
+1. Ve a **WhatsApp Manager → Templates → Create Template**
+2. Categoría: `UTILITY`, Idioma: `Español`
+3. Nombre: `proposal_sent` (o el que prefieras)
+4. Cuerpo:
+   ```
+   Hola {{1}}, te enviamos la propuesta económica de [Tu Empresa].
+   Cualquier pregunta, responde a este mensaje.
+   ```
+5. Submit → espera 24-48h por aprobación
+
+**8.2 Configurar el tenant**
+1. En `/admin`, edita el cliente (ya tiene que existir con su token de HubSpot)
+2. Click en **"Cargar pipelines de HubSpot"** — verás todos los stages con sus IDs
+3. Click en el botón **"propuesta"** del stage que corresponda al "propuesta enviada" del cliente
+4. (Recomendado) Mapea también las otras 4 etapas (`saludo`, `presentación`, `cierre`, `perdido`) con el dropdown `→map` para que el agente pueda mover deals correctamente
+5. Pega el nombre del template aprobado (`proposal_sent`)
+6. Guarda
+
+**8.3 Vercel Cron**
+El cron está en `vercel.json` corriendo cada 5 min. Necesitas la env var `CRON_SECRET` (genera con `openssl rand -hex 32`). Vercel la envía automáticamente al endpoint.
 
 ## Uso
 

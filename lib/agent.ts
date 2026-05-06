@@ -1,89 +1,135 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
+import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
 import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
 import { DealStage } from "./crm/types";
 import { createAdminClient } from "./supabase";
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+let _openai: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!_openai) {
+    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return _openai;
+}
 
-const TOOLS: Anthropic.Tool[] = [
+const TOOLS: ChatCompletionTool[] = [
   {
-    name: "search_contact",
-    description: "Busca un contacto en el CRM por nombre o empresa",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Nombre o empresa a buscar" },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "create_contact",
-    description: "Crea un nuevo contacto en el CRM. Úsalo cuando el usuario mencione una persona/empresa que no existe aún.",
-    input_schema: {
-      type: "object",
-      properties: {
-        name: { type: "string" },
-        company: { type: "string" },
-        email: { type: "string" },
-        phone: { type: "string" },
-      },
-      required: ["name"],
-    },
-  },
-  {
-    name: "search_deal",
-    description: "Busca un negocio/deal en el CRM",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Nombre del negocio o empresa" },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "move_deal",
-    description: "Mueve un negocio a una etapa del pipeline",
-    input_schema: {
-      type: "object",
-      properties: {
-        deal_id: { type: "string" },
-        stage: {
-          type: "string",
-          enum: ["saludo", "presentación", "propuesta", "cierre", "perdido"],
+    type: "function",
+    function: {
+      name: "search_contact",
+      description: "Busca un contacto en el CRM por nombre o empresa",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Nombre o empresa a buscar" },
         },
+        required: ["query"],
       },
-      required: ["deal_id", "stage"],
     },
   },
   {
-    name: "create_note",
-    description: "Registra una nota de actividad sobre un contacto",
-    input_schema: {
-      type: "object",
-      properties: {
-        contact_id: { type: "string" },
-        note: { type: "string" },
-      },
-      required: ["contact_id", "note"],
-    },
-  },
-  {
-    name: "create_task",
-    description: "Crea una tarea o alerta de seguimiento",
-    input_schema: {
-      type: "object",
-      properties: {
-        contact_id: { type: "string" },
-        title: { type: "string" },
-        due_date: {
-          type: "string",
-          description: "Fecha en formato YYYY-MM-DD",
+    type: "function",
+    function: {
+      name: "create_contact",
+      description: "Crea un nuevo contacto en el CRM. Úsalo cuando el usuario mencione una persona/empresa que no existe aún.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          company: { type: "string" },
+          email: { type: "string" },
+          phone: { type: "string" },
         },
+        required: ["name"],
       },
-      required: ["contact_id", "title", "due_date"],
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_deal",
+      description: "Busca un negocio/deal en el CRM",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Nombre del negocio o empresa" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_deal",
+      description: "Crea un nuevo negocio/deal asociado a un contacto. Úsalo cuando el usuario quiera abrir una oportunidad de venta nueva.",
+      parameters: {
+        type: "object",
+        properties: {
+          contact_id: { type: "string", description: "ID del contacto al que se asocia el deal" },
+          name: { type: "string", description: "Nombre del negocio (ej. 'Implementación Q3 - Clínica Norte')" },
+          amount: { type: "number", description: "Monto esperado en moneda local (opcional)" },
+          stage: {
+            type: "string",
+            enum: ["saludo", "presentación", "propuesta", "cierre", "perdido"],
+            description: "Etapa inicial del deal (por defecto: saludo)",
+          },
+        },
+        required: ["contact_id", "name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "move_deal",
+      description: "Mueve un negocio a una etapa del pipeline",
+      parameters: {
+        type: "object",
+        properties: {
+          deal_id: { type: "string" },
+          stage: {
+            type: "string",
+            enum: ["saludo", "presentación", "propuesta", "cierre", "perdido"],
+          },
+        },
+        required: ["deal_id", "stage"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_note",
+      description: "Registra una nota de actividad sobre un contacto",
+      parameters: {
+        type: "object",
+        properties: {
+          contact_id: { type: "string" },
+          note: { type: "string" },
+        },
+        required: ["contact_id", "note"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_task",
+      description: "Crea una tarea o alerta de seguimiento",
+      parameters: {
+        type: "object",
+        properties: {
+          contact_id: { type: "string" },
+          title: { type: "string" },
+          due_date: {
+            type: "string",
+            description: "Fecha en formato YYYY-MM-DD",
+          },
+        },
+        required: ["contact_id", "title", "due_date"],
+      },
     },
   },
 ];
@@ -103,36 +149,46 @@ async function logActivity(tenantId: string, action: string, details: any) {
 
 export async function processMessage(userMessage: string, tenant: Tenant): Promise<string> {
   const crm = getCrmAdapter(tenant);
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: userMessage }];
+  const messages: ChatCompletionMessageParam[] = [
+    {
+      role: "system",
+      content: tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`,
+    },
+    { role: "user", content: userMessage },
+  ];
 
   await logActivity(tenant.id, "message_received", { text: userMessage });
 
   // Loop del agente: usa tools hasta llegar a una respuesta final
   for (let i = 0; i < 10; i++) {
-    const response = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+    const response = await getOpenAI().chat.completions.create({
+      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
       max_tokens: 1024,
-      system: tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`,
       tools: TOOLS,
       messages,
     });
 
-    if (response.stop_reason === "end_turn") {
-      const textBlock = response.content.find((b) => b.type === "text") as
-        | Anthropic.TextBlock
-        | undefined;
-      return textBlock?.text || "Listo.";
+    const choice = response.choices[0];
+    const message = choice.message;
+    messages.push(message);
+
+    if (!message.tool_calls || message.tool_calls.length === 0) {
+      return message.content || "Listo.";
     }
 
-    if (response.stop_reason === "tool_use") {
-      const toolUse = response.content.find(
-        (b) => b.type === "tool_use"
-      ) as Anthropic.ToolUseBlock;
+    for (const toolCall of message.tool_calls) {
+      if (toolCall.type !== "function") continue;
+      const name = toolCall.function.name;
+      let input: any = {};
+      try {
+        input = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
+      } catch {
+        input = {};
+      }
 
       let toolResult = "";
       try {
-        const input: any = toolUse.input;
-        switch (toolUse.name) {
+        switch (name) {
           case "search_contact":
             toolResult = JSON.stringify(await crm.searchContact(input.query));
             break;
@@ -141,6 +197,16 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
             break;
           case "search_deal":
             toolResult = JSON.stringify(await crm.searchDeal(input.query));
+            break;
+          case "create_deal":
+            toolResult = JSON.stringify(
+              await crm.createDeal({
+                contactId: input.contact_id,
+                name: input.name,
+                amount: input.amount,
+                stage: (input.stage as DealStage) || "saludo",
+              })
+            );
             break;
           case "move_deal":
             toolResult = await crm.moveDeal(input.deal_id, input.stage as DealStage);
@@ -152,33 +218,19 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
             toolResult = await crm.createTask(input.contact_id, input.title, input.due_date);
             break;
           default:
-            toolResult = `Tool desconocido: ${toolUse.name}`;
+            toolResult = `Tool desconocido: ${name}`;
         }
-        await logActivity(tenant.id, "tool_used", {
-          tool: toolUse.name,
-          input: toolUse.input,
-        });
+        await logActivity(tenant.id, "tool_used", { tool: name, input });
       } catch (err: any) {
         toolResult = `Error: ${err.message}`;
-        await logActivity(tenant.id, "tool_error", {
-          tool: toolUse.name,
-          error: err.message,
-        });
+        await logActivity(tenant.id, "tool_error", { tool: name, error: err.message });
       }
 
-      messages.push({ role: "assistant", content: response.content });
       messages.push({
-        role: "user",
-        content: [
-          {
-            type: "tool_result",
-            tool_use_id: toolUse.id,
-            content: toolResult,
-          },
-        ],
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: toolResult,
       });
-    } else {
-      break;
     }
   }
 

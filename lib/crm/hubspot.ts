@@ -1,22 +1,31 @@
 import axios, { AxiosInstance } from "axios";
 import { CrmAdapter, Contact, Deal, DealStage } from "./types";
 
-const HUBSPOT_STAGE_MAP: Record<DealStage, string> = {
+// Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
+// con su propio mapeo via `tenant.stage_map`.
+export const DEFAULT_HUBSPOT_STAGE_MAP: Record<DealStage, string> = {
   saludo: "appointmentscheduled",
   "presentación": "qualifiedtobuy",
-  propuesta: "presentationscheduled",
+  propuesta: "contractsent",
   cierre: "closedwon",
   perdido: "closedlost",
 };
 
 export class HubSpotAdapter implements CrmAdapter {
   private client: AxiosInstance;
+  private stageMap: Record<string, string>;
 
-  constructor(token: string) {
+  constructor(token: string, stageMap?: Record<string, string> | null) {
     this.client = axios.create({
       baseURL: "https://api.hubapi.com",
       headers: { Authorization: `Bearer ${token}` },
     });
+    // El mapeo del tenant tiene prioridad; lo que falte cae al default.
+    this.stageMap = { ...DEFAULT_HUBSPOT_STAGE_MAP, ...(stageMap || {}) };
+  }
+
+  private resolveStage(stage: DealStage): string {
+    return this.stageMap[stage] || stage;
   }
 
   async searchContact(query: string): Promise<Contact[]> {
@@ -85,8 +94,36 @@ export class HubSpotAdapter implements CrmAdapter {
     }));
   }
 
+  async createDeal(input: { contactId: string; name: string; amount?: number; stage?: DealStage }): Promise<Deal> {
+    const stageId = this.resolveStage(input.stage || "saludo");
+    const properties: Record<string, any> = {
+      dealname: input.name,
+      dealstage: stageId,
+    };
+    if (input.amount !== undefined) properties.amount = String(input.amount);
+
+    const res = await this.client.post("/crm/v3/objects/deals", {
+      properties,
+      associations: [
+        {
+          to: { id: input.contactId },
+          // 3 = deal-to-contact (HUBSPOT_DEFINED)
+          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }],
+        },
+      ],
+    });
+
+    return {
+      id: res.data.id,
+      name: input.name,
+      stage: input.stage || "saludo",
+      amount: input.amount,
+      contactId: input.contactId,
+    };
+  }
+
   async moveDeal(dealId: string, stage: DealStage): Promise<string> {
-    const stageId = HUBSPOT_STAGE_MAP[stage] || stage;
+    const stageId = this.resolveStage(stage);
     await this.client.patch(`/crm/v3/objects/deals/${dealId}`, {
       properties: { dealstage: stageId },
     });

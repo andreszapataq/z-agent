@@ -16,15 +16,24 @@ type Tenant = {
   owner_number: string | null;
   hubspot_token: string | null;
   system_prompt: string | null;
+  proposal_stage_id: string | null;
+  proposal_template_name: string | null;
+  proposal_template_lang: string | null;
+  stage_map: Record<string, string> | null;
   created_at: string;
 };
+
+type StageOption = { id: string; label: string };
+type PipelineOption = { id: string; label: string; stages: StageOption[] };
+
+const STAGE_KEYS = ["saludo", "presentación", "propuesta", "cierre", "perdido"] as const;
 
 const COLOR_CLASSES = [styles.avTeal, styles.avAmber, styles.avPurple];
 
 export default function AdminPage() {
   const router = useRouter();
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
-  const [secret, setSecret] = useState<string | null>(null);
+  const [authed, setAuthed] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: string } | null>(null);
@@ -39,29 +48,23 @@ export default function AdminPage() {
     whatsapp_token: "",
     hubspot_token: "",
     system_prompt: "",
+    proposal_stage_id: "",
+    proposal_template_name: "",
+    proposal_template_lang: "es",
+    stage_map: {} as Record<string, string>,
   });
 
-  useEffect(() => {
-    const s = sessionStorage.getItem("z-admin-secret");
-    if (!s) {
-      router.push("/admin/login");
-      return;
-    }
-    setSecret(s);
-  }, [router]);
+  const [pipelines, setPipelines] = useState<PipelineOption[] | null>(null);
+  const [loadingPipelines, setLoadingPipelines] = useState(false);
 
   useEffect(() => {
-    if (secret) loadTenants();
-  }, [secret]);
+    loadTenants();
+  }, []);
 
   async function loadTenants() {
-    if (!secret) return;
     try {
-      const res = await fetch("/api/admin/tenants", {
-        headers: { "x-admin-secret": secret },
-      });
+      const res = await fetch("/api/admin/tenants");
       if (res.status === 401) {
-        sessionStorage.removeItem("z-admin-secret");
         router.push("/admin/login");
         return;
       }
@@ -71,6 +74,7 @@ export default function AdminPage() {
       }
       const data = await res.json();
       setTenants(data);
+      setAuthed(true);
     } catch (e) {
       showToast("Error cargando clientes", "error");
     }
@@ -82,6 +86,7 @@ export default function AdminPage() {
   }
 
   function openModal(tenant?: Tenant) {
+    setPipelines(null);
     if (tenant) {
       setEditing(tenant.id);
       setForm({
@@ -93,6 +98,10 @@ export default function AdminPage() {
         whatsapp_token: tenant.whatsapp_token || "",
         hubspot_token: tenant.hubspot_token || "",
         system_prompt: tenant.system_prompt || "",
+        proposal_stage_id: tenant.proposal_stage_id || "",
+        proposal_template_name: tenant.proposal_template_name || "",
+        proposal_template_lang: tenant.proposal_template_lang || "es",
+        stage_map: tenant.stage_map || {},
       });
     } else {
       setEditing(null);
@@ -105,9 +114,35 @@ export default function AdminPage() {
         whatsapp_token: "",
         hubspot_token: "",
         system_prompt: "",
+        proposal_stage_id: "",
+        proposal_template_name: "",
+        proposal_template_lang: "es",
+        stage_map: {},
       });
     }
     setModalOpen(true);
+  }
+
+  async function loadHubspotStages() {
+    if (!editing) {
+      showToast("Guarda primero el tenant para poder consultar HubSpot", "error");
+      return;
+    }
+    setLoadingPipelines(true);
+    try {
+      const res = await fetch(`/api/admin/hubspot-stages/${editing}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || "No se pudo consultar HubSpot", "error");
+        return;
+      }
+      const data = await res.json();
+      setPipelines(data.pipelines || []);
+    } catch {
+      showToast("Error de red consultando HubSpot", "error");
+    } finally {
+      setLoadingPipelines(false);
+    }
   }
 
   async function saveTenant() {
@@ -125,14 +160,27 @@ export default function AdminPage() {
       : "/api/admin/tenants";
     const method = editing ? "PUT" : "POST";
 
+    // Normalizar: strings vacíos → null, stage_map vacío → null
+    const payload: any = { ...form };
+    for (const k of [
+      "whatsapp_phone_id",
+      "owner_number",
+      "whatsapp_token",
+      "hubspot_token",
+      "system_prompt",
+      "proposal_stage_id",
+      "proposal_template_name",
+      "proposal_template_lang",
+    ]) {
+      if (!payload[k]) payload[k] = null;
+    }
+    if (!Object.keys(payload.stage_map || {}).length) payload.stage_map = null;
+
     try {
       const res = await fetch(url, {
         method,
-        headers: {
-          "Content-Type": "application/json",
-          "x-admin-secret": secret!,
-        },
-        body: JSON.stringify(form),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(await res.text());
       showToast(editing ? "Cliente actualizado" : "Cliente agregado");
@@ -146,10 +194,7 @@ export default function AdminPage() {
   async function deleteTenant(id: string, name: string) {
     if (!confirm(`¿Eliminar el cliente "${name}"?\nEsta acción no se puede deshacer.`)) return;
     try {
-      const res = await fetch(`/api/admin/tenants/${id}`, {
-        method: "DELETE",
-        headers: { "x-admin-secret": secret! },
-      });
+      const res = await fetch(`/api/admin/tenants/${id}`, { method: "DELETE" });
       if (!res.ok) throw new Error();
       showToast("Cliente eliminado");
       loadTenants();
@@ -158,12 +203,14 @@ export default function AdminPage() {
     }
   }
 
-  function logout() {
-    sessionStorage.removeItem("z-admin-secret");
+  async function logout() {
+    try {
+      await fetch("/api/admin/logout", { method: "POST" });
+    } catch {}
     router.push("/admin/login");
   }
 
-  if (!secret) return null;
+  if (!authed) return null;
 
   const total = tenants?.length || 0;
   const withWA = tenants?.filter((t) => t.whatsapp_token).length || 0;
@@ -444,6 +491,144 @@ export default function AdminPage() {
                   onChange={(e) => setForm({ ...form, hubspot_token: e.target.value })}
                 />
               </div>
+            )}
+
+            {form.crm_type === "hubspot" && (
+              <>
+                <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border2)" }}>
+                  <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+                    Notificación de propuesta · WhatsApp
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--text3)", margin: "0 0 12px" }}>
+                    Cuando un deal entre a la etapa configurada, el cliente recibe un mensaje
+                    con la plantilla aprobada en Meta. Funciona via polling cada 5 min.
+                  </p>
+                </div>
+
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.btnOutline} ${styles.btnSm}`}
+                    onClick={loadHubspotStages}
+                    disabled={loadingPipelines || !editing}
+                    style={{ flex: 1 }}
+                  >
+                    {loadingPipelines ? "Consultando…" : "Cargar pipelines de HubSpot"}
+                  </button>
+                </div>
+
+                {!editing && (
+                  <p style={{ fontSize: 11, color: "var(--text3)", marginTop: -8, marginBottom: 12 }}>
+                    Guarda primero el tenant con el token de HubSpot, luego edítalo para ver los pipelines.
+                  </p>
+                )}
+
+                {pipelines && pipelines.length === 0 && (
+                  <p style={{ fontSize: 12, color: "var(--text3)" }}>
+                    Este tenant no tiene pipelines de deals en HubSpot.
+                  </p>
+                )}
+
+                {pipelines && pipelines.length > 0 && (
+                  <div style={{ background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 8, padding: 12, marginBottom: 12, fontFamily: "var(--font-mono)", fontSize: 11 }}>
+                    {pipelines.map((p) => (
+                      <div key={p.id} style={{ marginBottom: 10 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text2)" }}>
+                          {p.label} <span style={{ color: "var(--text3)" }}>(pipeline)</span>
+                        </div>
+                        {p.stages.map((s) => (
+                          <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "2px 0", color: "var(--text2)" }}>
+                            <span style={{ flex: 1 }}>{s.label}</span>
+                            <code style={{ color: "var(--text3)", fontSize: 10 }}>{s.id}</code>
+                            <button
+                              type="button"
+                              onClick={() => setForm({ ...form, proposal_stage_id: s.id })}
+                              style={{ fontSize: 10, padding: "2px 6px", border: "1px solid var(--border2)", borderRadius: 4, background: "transparent", color: "var(--text2)", cursor: "pointer" }}
+                              title="Usar como etapa de propuesta"
+                            >
+                              propuesta
+                            </button>
+                            <select
+                              onChange={(e) => {
+                                const key = e.target.value;
+                                if (!key) return;
+                                setForm({ ...form, stage_map: { ...form.stage_map, [key]: s.id } });
+                                e.target.value = "";
+                              }}
+                              defaultValue=""
+                              style={{ fontSize: 10, padding: "2px 4px", border: "1px solid var(--border2)", borderRadius: 4, background: "transparent", color: "var(--text2)" }}
+                              title="Asignar a stage map"
+                            >
+                              <option value="">→map</option>
+                              {STAGE_KEYS.map((k) => (
+                                <option key={k} value={k}>{k}</option>
+                              ))}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className={styles.formRow}>
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Stage ID de propuesta</label>
+                    <input
+                      className={styles.formInput}
+                      placeholder="contractsent o stage custom"
+                      value={form.proposal_stage_id}
+                      onChange={(e) => setForm({ ...form, proposal_stage_id: e.target.value })}
+                    />
+                  </div>
+                  <div className={styles.formGroup}>
+                    <label className={styles.formLabel}>Idioma del template</label>
+                    <input
+                      className={styles.formInput}
+                      placeholder="es"
+                      value={form.proposal_template_lang}
+                      onChange={(e) => setForm({ ...form, proposal_template_lang: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                <div className={styles.formGroup}>
+                  <label className={styles.formLabel}>Nombre del template aprobado en Meta</label>
+                  <input
+                    className={styles.formInput}
+                    placeholder="proposal_sent"
+                    value={form.proposal_template_name}
+                    onChange={(e) => setForm({ ...form, proposal_template_name: e.target.value })}
+                  />
+                </div>
+
+                <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border2)" }}>
+                  <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+                    Mapeo de etapas (Stage Map)
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--text3)", margin: "0 0 12px" }}>
+                    Asigna el stageId real del pipeline del cliente a cada etapa que entiende
+                    el agente. Si dejas vacío, se usa el pipeline default de HubSpot.
+                  </p>
+                </div>
+
+                {STAGE_KEYS.map((key) => (
+                  <div className={styles.formGroup} key={key}>
+                    <label className={styles.formLabel}>{key}</label>
+                    <input
+                      className={styles.formInput}
+                      placeholder={`stageId para "${key}"`}
+                      value={form.stage_map[key] || ""}
+                      onChange={(e) => {
+                        const next = { ...form.stage_map };
+                        if (e.target.value) next[key] = e.target.value;
+                        else delete next[key];
+                        setForm({ ...form, stage_map: next });
+                      }}
+                    />
+                  </div>
+                ))}
+              </>
             )}
 
             <div className={styles.formGroup}>
