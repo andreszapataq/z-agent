@@ -54,7 +54,7 @@ Single shared secret stored in `ADMIN_SECRET`. The login page POSTs to `/api/adm
 
 When a HubSpot deal enters a configured "proposal sent" stage, the system sends a pre-approved WhatsApp template message to the deal's contact phone — without manual intervention by the commercial.
 
-- **Trigger**: Vercel Cron hits `/api/cron/check-deals` every 5 min.
+- **Trigger**: Vercel Cron hits `/api/cron/check-deals` once per day at 14:00 UTC (Hobby plan limit; pipeline business rule is "notify the day after the proposal", so daily fits the requirement).
 - **Polling logic**: `lib/hubspot-poll.ts` queries each active HubSpot tenant's deals via `POST /crm/v3/objects/deals/search` filtered by `dealstage = tenant.proposal_stage_id` AND `hs_date_entered_<stageId> >= last_polled_at`.
 - **Dedup**: before sending, queries `activity_log` for `action = 'proposal_notified'` matching the `deal_id` — if found, skip.
 - **Template**: `sendWhatsAppTemplate()` in `lib/whatsapp.ts` calls Meta's template API with `tenant.proposal_template_name` and `proposal_template_lang`. Variables passed: `{{1}}` = contact firstname, `{{2}}` = deal name.
