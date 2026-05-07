@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { waitUntil } from "@vercel/functions";
 import { getTenantByPhone } from "@/lib/tenants";
 import { processMessage } from "@/lib/agent";
 import { sendWhatsAppMessage, verifyMetaSignature } from "@/lib/whatsapp";
@@ -35,9 +36,14 @@ export async function POST(req: NextRequest) {
     return new NextResponse("Bad Request", { status: 400 });
   }
 
-  // Procesar de forma asíncrona — Meta debe recibir 200 rápido
-  processIncomingMessage(body).catch((err) =>
-    console.error("[webhook error]", err)
+  // Meta espera un 200 en menos de 20 s, pero el loop del agente
+  // (OpenAI + CRM + reply) puede tardar varios segundos. `waitUntil`
+  // le dice al runtime de Vercel que mantenga la función viva hasta
+  // que la promesa se resuelva, mientras la respuesta ya viajó.
+  waitUntil(
+    processIncomingMessage(body).catch((err) =>
+      console.error("[webhook error]", err)
+    )
   );
 
   return NextResponse.json({ ok: true });
