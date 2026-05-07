@@ -131,35 +131,52 @@ export class HubSpotAdapter implements CrmAdapter {
   }
 
   async createNote(contactId: string, body: string): Promise<string> {
-    await this.client.post("/crm/v3/objects/notes", {
-      properties: {
-        hs_note_body: body,
-        hs_timestamp: Date.now(),
-      },
-      associations: [
-        {
-          to: { id: contactId },
-          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 202 }],
+    try {
+      await this.client.post("/crm/v3/objects/notes", {
+        properties: {
+          hs_note_body: body,
+          hs_timestamp: Date.now(),
         },
-      ],
-    });
-    return "Nota registrada en HubSpot";
+        associations: [
+          {
+            to: { id: contactId },
+            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 202 }],
+          },
+        ],
+      });
+      return "Nota registrada en HubSpot";
+    } catch (err: any) {
+      // Some HubSpot plans don't expose `crm.objects.notes.write`. The note
+      // body is already persisted in `activity_log` by the agent loop, so we
+      // return a graceful success to keep the conversation moving.
+      if (err?.response?.status === 403) {
+        return "Nota registrada (HubSpot no expone el scope de notas en este plan; queda en el log de actividad)";
+      }
+      throw err;
+    }
   }
 
   async createTask(contactId: string, title: string, dueDate: string): Promise<string> {
-    await this.client.post("/crm/v3/objects/tasks", {
-      properties: {
-        hs_task_subject: title,
-        hs_task_status: "NOT_STARTED",
-        hs_timestamp: new Date(dueDate).getTime(),
-      },
-      associations: [
-        {
-          to: { id: contactId },
-          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 204 }],
+    try {
+      await this.client.post("/crm/v3/objects/tasks", {
+        properties: {
+          hs_task_subject: title,
+          hs_task_status: "NOT_STARTED",
+          hs_timestamp: new Date(dueDate).getTime(),
         },
-      ],
-    });
-    return `Tarea "${title}" creada en HubSpot`;
+        associations: [
+          {
+            to: { id: contactId },
+            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 204 }],
+          },
+        ],
+      });
+      return `Tarea "${title}" creada en HubSpot`;
+    } catch (err: any) {
+      if (err?.response?.status === 403) {
+        return `Tarea "${title}" registrada (HubSpot no expone el scope de tareas en este plan; queda en el log de actividad)`;
+      }
+      throw err;
+    }
   }
 }
