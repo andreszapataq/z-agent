@@ -149,10 +149,24 @@ async function logActivity(tenantId: string, action: string, details: any) {
 
 export async function processMessage(userMessage: string, tenant: Tenant): Promise<string> {
   const crm = getCrmAdapter(tenant);
+
+  // The OpenAI model has no notion of the current date, so it tends to
+  // anchor relative dates ("el viernes", "mañana", "la próxima semana") to
+  // its training cutoff and produces wildly past `due_date` values.
+  // Anchoring to America/Bogota matches the operating timezone of QNA
+  // Medical's commercial team. If we ever onboard a tenant in another
+  // timezone, promote this to a column on `tenants`.
+  const todayInBogota = new Date().toLocaleDateString("en-CA", {
+    timeZone: "America/Bogota",
+  });
+  const dateContext = `\n\n📅 FECHA ACTUAL: ${todayInBogota} (zona horaria America/Bogota). Úsala como referencia obligatoria para los due_date de tareas: "el viernes" significa el próximo viernes a partir de esta fecha; "mañana" significa el día siguiente; etc.`;
+
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
-      content: tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`,
+      content:
+        (tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`) +
+        dateContext,
     },
     { role: "user", content: userMessage },
   ];
