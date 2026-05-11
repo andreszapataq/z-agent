@@ -29,14 +29,9 @@ export class HubSpotAdapter implements CrmAdapter {
   }
 
   async searchContact(query: string): Promise<Contact[]> {
+    // Top-level `query` searches firstname/lastname/email/company together; a single-property filterGroup missed name matches.
     const res = await this.client.post("/crm/v3/objects/contacts/search", {
-      filterGroups: [
-        {
-          filters: [
-            { propertyName: "company", operator: "CONTAINS_TOKEN", value: query },
-          ],
-        },
-      ],
+      query,
       properties: ["firstname", "lastname", "email", "company", "phone"],
       limit: 5,
     });
@@ -74,14 +69,9 @@ export class HubSpotAdapter implements CrmAdapter {
   }
 
   async searchDeal(query: string): Promise<Deal[]> {
+    // Top-level `query` searches dealname plus associated company/contact properties; a single-property filterGroup missed those.
     const res = await this.client.post("/crm/v3/objects/deals/search", {
-      filterGroups: [
-        {
-          filters: [
-            { propertyName: "dealname", operator: "CONTAINS_TOKEN", value: query },
-          ],
-        },
-      ],
+      query,
       properties: ["dealname", "dealstage", "amount"],
       limit: 5,
     });
