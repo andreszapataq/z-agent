@@ -33,6 +33,7 @@ const COLOR_CLASSES = [styles.avTeal, styles.avAmber, styles.avPurple];
 export default function AdminPage() {
   const router = useRouter();
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
+  const [msgsToday, setMsgsToday] = useState<Record<string, number>>({});
   const [authed, setAuthed] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
@@ -75,8 +76,20 @@ export default function AdminPage() {
       const data = await res.json();
       setTenants(data);
       setAuthed(true);
+      loadMsgsToday();
     } catch (e) {
       showToast("Error cargando clientes", "error");
+    }
+  }
+
+  async function loadMsgsToday() {
+    try {
+      const res = await fetch("/api/admin/stats/messages-today");
+      if (!res.ok) return;
+      const data = await res.json();
+      setMsgsToday(data.counts || {});
+    } catch {
+      // silencioso: el dashboard funciona sin esta métrica
     }
   }
 
@@ -349,7 +362,7 @@ export default function AdminPage() {
                     </div>
                     <div className={styles.tcFooter}>
                       <div className={styles.tcMsgs}>
-                        <strong>—</strong> msgs hoy
+                        <strong>{msgsToday[t.id] ?? 0}</strong> msgs hoy
                       </div>
                       <div className={styles.tcActions}>
                         <button className={styles.iconBtn} title="Editar" onClick={() => openModal(t)}>
