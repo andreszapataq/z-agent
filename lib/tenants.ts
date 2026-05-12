@@ -17,6 +17,10 @@ export type Tenant = {
   proposal_template_lang: string | null;
   last_polled_at: string | null;
 
+  // Sync de correos con un template específico → mueve/crea deal a "propuesta"
+  proposal_email_template_id: string | null;
+  last_email_polled_at: string | null;
+
   // Mapeo etapa-en-español → stageId real del pipeline custom de cada tenant
   stage_map: Record<string, string> | null;
 

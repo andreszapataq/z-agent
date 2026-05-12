@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { pollProposalNotifications } from "@/lib/hubspot-poll";
+import { pollProposalEmails, pollProposalNotifications } from "@/lib/hubspot-poll";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -13,8 +13,11 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const result = await pollProposalNotifications();
-    return NextResponse.json({ ok: true, ...result });
+    // 1) Sync correos → deals (puede dejar deals nuevos en "propuesta")
+    const emails = await pollProposalEmails();
+    // 2) Notificar al comercial los deals que están en "propuesta"
+    const deals = await pollProposalNotifications();
+    return NextResponse.json({ ok: true, emails, deals });
   } catch (err: any) {
     console.error("[cron/check-deals] error", err);
     return NextResponse.json(

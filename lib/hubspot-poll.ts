@@ -10,6 +10,202 @@ type PollResult = {
   errors: string[];
 };
 
+type EmailSyncResult = {
+  scanned: number;
+  synced: number;
+  errors: string[];
+};
+
+// Recorre tenants HubSpot activos con un template de propuesta configurado.
+// Para cada correo enviado con ese template, mueve el deal asociado al
+// contacto a la etapa de "propuesta", o crea uno nuevo si no existe.
+export async function pollProposalEmails(): Promise<EmailSyncResult> {
+  const result: EmailSyncResult = { scanned: 0, synced: 0, errors: [] };
+  const supabase = createAdminClient();
+
+  const { data: tenants, error } = await supabase
+    .from("tenants")
+    .select("*")
+    .eq("crm_type", "hubspot")
+    .eq("status", "active")
+    .not("proposal_stage_id", "is", null)
+    .not("proposal_email_template_id", "is", null)
+    .not("hubspot_token", "is", null);
+
+  if (error) {
+    result.errors.push(`supabase: ${error.message}`);
+    return result;
+  }
+  if (!tenants) return result;
+
+  result.scanned = tenants.length;
+
+  for (const tenant of tenants as Tenant[]) {
+    try {
+      result.synced += await syncTenantEmails(tenant);
+    } catch (e: any) {
+      const method = e?.config?.method?.toUpperCase();
+      const url = e?.config?.url;
+      const status = e?.response?.status;
+      const data = e?.response?.data
+        ? JSON.stringify(e.response.data)
+        : e?.message || String(e);
+      const where = url ? ` [${method} ${url} → ${status}]` : "";
+      console.error(`[email-sync] tenant=${tenant.id} error${where}:`, data);
+      result.errors.push(`${tenant.id}${where}: ${data}`);
+    }
+  }
+  return result;
+}
+
+async function syncTenantEmails(tenant: Tenant): Promise<number> {
+  const supabase = createAdminClient();
+  const templateId = tenant.proposal_email_template_id!;
+  const targetStage = tenant.proposal_stage_id!;
+  const now = Date.now();
+  const since = tenant.last_email_polled_at
+    ? new Date(tenant.last_email_polled_at).getTime() - 60_000
+    : now - 24 * 60 * 60_000; // primera corrida: últimas 24h (dedup por email_id evita reprocesar)
+
+  const client = axios.create({
+    baseURL: "https://api.hubapi.com",
+    headers: { Authorization: `Bearer ${tenant.hubspot_token}` },
+  });
+
+  const search = await client.post("/crm/v3/objects/emails/search", {
+    filterGroups: [
+      {
+        filters: [
+          { propertyName: "hs_template_id", operator: "EQ", value: templateId },
+          { propertyName: "hs_timestamp", operator: "GTE", value: since },
+        ],
+      },
+    ],
+    properties: ["hs_template_id", "hs_email_subject", "hs_timestamp", "hs_email_direction"],
+    limit: 50,
+  });
+
+  const emails = (search.data.results || []) as Array<{
+    id: string;
+    properties: Record<string, string>;
+  }>;
+
+  let synced = 0;
+
+  for (const email of emails) {
+    // Dedup: si ya procesamos este email_id, saltar
+    const { data: prior } = await supabase
+      .from("activity_log")
+      .select("id")
+      .eq("tenant_id", tenant.id)
+      .eq("action", "proposal_email_synced")
+      .filter("details->>email_id", "eq", email.id)
+      .limit(1);
+
+    if (prior && prior.length > 0) continue;
+
+    const assoc = await client.get(
+      `/crm/v3/objects/emails/${email.id}/associations/contacts`
+    );
+    const contactId = assoc.data?.results?.[0]?.id;
+    if (!contactId) {
+      await supabase.from("activity_log").insert({
+        tenant_id: tenant.id,
+        action: "proposal_email_skipped",
+        details: { email_id: email.id, reason: "no_contact" },
+      });
+      continue;
+    }
+
+    const contactRes = await client.get(
+      `/crm/v3/objects/contacts/${contactId}?properties=firstname,lastname,company`
+    );
+    const cprops = contactRes.data?.properties || {};
+    const contactName = [cprops.firstname, cprops.lastname].filter(Boolean).join(" ").trim()
+      || cprops.company
+      || "Contacto sin nombre";
+
+    // Buscar deals abiertos asociados al contacto
+    const dealAssoc = await client.get(
+      `/crm/v3/objects/contacts/${contactId}/associations/deals`
+    );
+    const dealIds: string[] = (dealAssoc.data?.results || []).map((d: any) => d.id);
+
+    let dealId: string | null = null;
+    let dealAction: "moved" | "created" | "already_at_stage" = "created";
+    let dealName: string | null = null;
+
+    if (dealIds.length > 0) {
+      // Trae propiedades de los deals para escoger uno abierto
+      const dealsRes = await client.post("/crm/v3/objects/deals/batch/read", {
+        properties: ["dealname", "dealstage", "pipeline"],
+        inputs: dealIds.map((id) => ({ id })),
+      });
+      const deals = (dealsRes.data?.results || []) as Array<{
+        id: string;
+        properties: Record<string, string>;
+      }>;
+
+      const closedStages = new Set(["closedwon", "closedlost"]);
+      const openDeal = deals.find((d) => !closedStages.has(d.properties.dealstage));
+
+      if (openDeal) {
+        dealId = openDeal.id;
+        dealName = openDeal.properties.dealname;
+        if (openDeal.properties.dealstage === targetStage) {
+          dealAction = "already_at_stage";
+        } else {
+          await client.patch(`/crm/v3/objects/deals/${openDeal.id}`, {
+            properties: { dealstage: targetStage },
+          });
+          dealAction = "moved";
+        }
+      }
+    }
+
+    if (!dealId) {
+      const subject = (email.properties.hs_email_subject || "").trim();
+      dealName = subject || `Propuesta — ${contactName}`;
+      const created = await client.post("/crm/v3/objects/deals", {
+        properties: {
+          dealname: dealName,
+          dealstage: targetStage,
+        },
+        associations: [
+          {
+            to: { id: contactId },
+            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }],
+          },
+        ],
+      });
+      dealId = created.data?.id;
+      dealAction = "created";
+    }
+
+    await supabase.from("activity_log").insert({
+      tenant_id: tenant.id,
+      action: "proposal_email_synced",
+      details: {
+        email_id: email.id,
+        email_subject: email.properties.hs_email_subject || null,
+        contact_id: contactId,
+        contact_name: contactName,
+        deal_id: dealId,
+        deal_name: dealName,
+        deal_action: dealAction,
+      },
+    });
+    synced++;
+  }
+
+  await supabase
+    .from("tenants")
+    .update({ last_email_polled_at: new Date(now).toISOString() })
+    .eq("id", tenant.id);
+
+  return synced;
+}
+
 // Punto de entrada del cron. Recorre tenants HubSpot activos y, para los
 // deals que entraron a la etapa de "propuesta" desde la última corrida,
 // crea una tarea en HubSpot + WhatsApp libre al comercial. No envía
@@ -41,11 +237,15 @@ export async function pollProposalNotifications(): Promise<PollResult> {
     try {
       result.notified += await pollTenant(tenant);
     } catch (e: any) {
-      const msg = e?.response?.data
+      const method = e?.config?.method?.toUpperCase();
+      const url = e?.config?.url;
+      const status = e?.response?.status;
+      const data = e?.response?.data
         ? JSON.stringify(e.response.data)
         : e?.message || String(e);
-      console.error(`[poll] tenant=${tenant.id} error:`, msg);
-      result.errors.push(`${tenant.id}: ${msg}`);
+      const where = url ? ` [${method} ${url} → ${status}]` : "";
+      console.error(`[poll] tenant=${tenant.id} error${where}:`, data);
+      result.errors.push(`${tenant.id}${where}: ${data}`);
     }
   }
   return result;
@@ -55,30 +255,25 @@ async function pollTenant(tenant: Tenant): Promise<number> {
   const supabase = createAdminClient();
   const crm = getCrmAdapter(tenant);
   const stageId = tenant.proposal_stage_id!;
-  const enteredProp = `hs_date_entered_${stageId}`;
-
-  // Ventana: desde last_polled_at - 1 min (overlap defensivo) hasta ahora.
-  // Primera corrida: últimos 10 min para no notificar deals viejos.
   const now = Date.now();
-  const since = tenant.last_polled_at
-    ? new Date(tenant.last_polled_at).getTime() - 60_000
-    : now - 10 * 60_000;
 
   const client = axios.create({
     baseURL: "https://api.hubapi.com",
     headers: { Authorization: `Bearer ${tenant.hubspot_token}` },
   });
 
+  // Trae todos los deals en la etapa de propuesta. El dedup contra
+  // activity_log evita reenvíos; no usamos hs_date_entered_<stageId>
+  // porque HubSpot lo rechaza con 400 en algunos portales.
   const search = await client.post("/crm/v3/objects/deals/search", {
     filterGroups: [
       {
         filters: [
           { propertyName: "dealstage", operator: "EQ", value: stageId },
-          { propertyName: enteredProp, operator: "GTE", value: String(since) },
         ],
       },
     ],
-    properties: ["dealname", "dealstage", enteredProp],
+    properties: ["dealname", "dealstage"],
     limit: 50,
   });
 
