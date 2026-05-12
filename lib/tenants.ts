@@ -11,10 +11,9 @@ export type Tenant = {
   hubspot_token: string | null;
   system_prompt: string | null;
 
-  // Notificación proactiva al cliente cuando un deal entra a "propuesta"
+  // Cuando un deal entra a la etapa de propuesta, el comercial recibe
+  // un recordatorio (WhatsApp libre + tarea HubSpot).
   proposal_stage_id: string | null;
-  proposal_template_name: string | null;
-  proposal_template_lang: string | null;
   last_polled_at: string | null;
 
   // Sync de correos con un template específico → mueve/crea deal a "propuesta"

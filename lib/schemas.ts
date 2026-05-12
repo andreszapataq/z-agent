@@ -19,8 +19,6 @@ export const tenantCreateSchema = z.object({
 
   // Proposal notification config
   proposal_stage_id: z.string().max(64).nullable().optional(),
-  proposal_template_name: z.string().max(128).nullable().optional(),
-  proposal_template_lang: z.string().max(10).nullable().optional(),
   proposal_email_template_id: z.string().max(64).nullable().optional(),
 
   // Mapeo de stages en español → stageId real del pipeline del tenant

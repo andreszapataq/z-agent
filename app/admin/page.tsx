@@ -17,8 +17,7 @@ type Tenant = {
   hubspot_token: string | null;
   system_prompt: string | null;
   proposal_stage_id: string | null;
-  proposal_template_name: string | null;
-  proposal_template_lang: string | null;
+  proposal_email_template_id: string | null;
   stage_map: Record<string, string> | null;
   created_at: string;
 };
@@ -50,8 +49,7 @@ export default function AdminPage() {
     hubspot_token: "",
     system_prompt: "",
     proposal_stage_id: "",
-    proposal_template_name: "",
-    proposal_template_lang: "es",
+    proposal_email_template_id: "",
     stage_map: {} as Record<string, string>,
   });
 
@@ -112,8 +110,7 @@ export default function AdminPage() {
         hubspot_token: tenant.hubspot_token || "",
         system_prompt: tenant.system_prompt || "",
         proposal_stage_id: tenant.proposal_stage_id || "",
-        proposal_template_name: tenant.proposal_template_name || "",
-        proposal_template_lang: tenant.proposal_template_lang || "es",
+        proposal_email_template_id: tenant.proposal_email_template_id || "",
         stage_map: tenant.stage_map || {},
       });
     } else {
@@ -128,8 +125,7 @@ export default function AdminPage() {
         hubspot_token: "",
         system_prompt: "",
         proposal_stage_id: "",
-        proposal_template_name: "",
-        proposal_template_lang: "es",
+        proposal_email_template_id: "",
         stage_map: {},
       });
     }
@@ -182,8 +178,7 @@ export default function AdminPage() {
       "hubspot_token",
       "system_prompt",
       "proposal_stage_id",
-      "proposal_template_name",
-      "proposal_template_lang",
+      "proposal_email_template_id",
     ]) {
       if (!payload[k]) payload[k] = null;
     }
@@ -510,11 +505,12 @@ export default function AdminPage() {
               <>
                 <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border2)" }}>
                   <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
-                    Notificación de propuesta · WhatsApp
+                    Sync de propuestas · cron diario
                   </div>
                   <p style={{ fontSize: 12, color: "var(--text3)", margin: "0 0 12px" }}>
-                    Cuando un deal entre a la etapa configurada, el cliente recibe un mensaje
-                    con la plantilla aprobada en Meta. Funciona via polling cada 5 min.
+                    El cron de las 14:00 UTC detecta correos enviados con el template configurado
+                    y mueve/crea el deal en la etapa de propuesta. Luego el comercial recibe un
+                    recordatorio (tarea HubSpot + WhatsApp libre) — sin costos de Meta.
                   </p>
                 </div>
 
@@ -589,30 +585,20 @@ export default function AdminPage() {
                     <label className={styles.formLabel}>Stage ID de propuesta</label>
                     <input
                       className={styles.formInput}
-                      placeholder="contractsent o stage custom"
+                      placeholder="presentationscheduled"
                       value={form.proposal_stage_id}
                       onChange={(e) => setForm({ ...form, proposal_stage_id: e.target.value })}
                     />
                   </div>
                   <div className={styles.formGroup}>
-                    <label className={styles.formLabel}>Idioma del template</label>
+                    <label className={styles.formLabel}>Template ID del correo</label>
                     <input
                       className={styles.formInput}
-                      placeholder="es"
-                      value={form.proposal_template_lang}
-                      onChange={(e) => setForm({ ...form, proposal_template_lang: e.target.value })}
+                      placeholder="122339146"
+                      value={form.proposal_email_template_id}
+                      onChange={(e) => setForm({ ...form, proposal_email_template_id: e.target.value })}
                     />
                   </div>
-                </div>
-
-                <div className={styles.formGroup}>
-                  <label className={styles.formLabel}>Nombre del template aprobado en Meta</label>
-                  <input
-                    className={styles.formInput}
-                    placeholder="proposal_sent"
-                    value={form.proposal_template_name}
-                    onChange={(e) => setForm({ ...form, proposal_template_name: e.target.value })}
-                  />
                 </div>
 
                 <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border2)" }}>
