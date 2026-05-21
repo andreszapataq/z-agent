@@ -15,8 +15,10 @@ export async function GET(req: NextRequest) {
   try {
     // 1) Sync correos → deals (puede dejar deals nuevos en "propuesta")
     const emails = await pollProposalEmails();
-    // 2) Notificar al comercial los deals que están en "propuesta"
-    const deals = await pollProposalNotifications();
+    // 2) Notificar al comercial los deals que están en "propuesta".
+    //    Le pasamos los deals recién sincronizados para notificarlos en
+    //    esta misma corrida, sin esperar al índice de búsqueda de HubSpot.
+    const deals = await pollProposalNotifications(emails.dealsByTenant);
     return NextResponse.json({ ok: true, emails, deals });
   } catch (err: any) {
     console.error("[cron/check-deals] error", err);

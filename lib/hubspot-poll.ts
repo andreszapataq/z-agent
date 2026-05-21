@@ -10,17 +10,21 @@ type PollResult = {
   errors: string[];
 };
 
+type TouchedDeal = { id: string; name: string };
+
 type EmailSyncResult = {
   scanned: number;
   synced: number;
   errors: string[];
+  // deals creados/movidos a la etapa de propuesta en esta corrida, por tenant
+  dealsByTenant: Record<string, TouchedDeal[]>;
 };
 
 // Recorre tenants HubSpot activos con un template de propuesta configurado.
 // Para cada correo enviado con ese template, mueve el deal asociado al
 // contacto a la etapa de "propuesta", o crea uno nuevo si no existe.
 export async function pollProposalEmails(): Promise<EmailSyncResult> {
-  const result: EmailSyncResult = { scanned: 0, synced: 0, errors: [] };
+  const result: EmailSyncResult = { scanned: 0, synced: 0, errors: [], dealsByTenant: {} };
   const supabase = createAdminClient();
 
   const { data: tenants, error } = await supabase
@@ -42,7 +46,9 @@ export async function pollProposalEmails(): Promise<EmailSyncResult> {
 
   for (const tenant of tenants as Tenant[]) {
     try {
-      result.synced += await syncTenantEmails(tenant);
+      const { synced, deals } = await syncTenantEmails(tenant);
+      result.synced += synced;
+      if (deals.length > 0) result.dealsByTenant[tenant.id] = deals;
     } catch (e: any) {
       const method = e?.config?.method?.toUpperCase();
       const url = e?.config?.url;
@@ -58,7 +64,7 @@ export async function pollProposalEmails(): Promise<EmailSyncResult> {
   return result;
 }
 
-async function syncTenantEmails(tenant: Tenant): Promise<number> {
+async function syncTenantEmails(tenant: Tenant): Promise<{ synced: number; deals: TouchedDeal[] }> {
   const supabase = createAdminClient();
   const templateId = tenant.proposal_email_template_id!;
   const targetStage = tenant.proposal_stage_id!;
@@ -91,6 +97,7 @@ async function syncTenantEmails(tenant: Tenant): Promise<number> {
   }>;
 
   let synced = 0;
+  const touched: TouchedDeal[] = [];
 
   for (const email of emails) {
     // Dedup: si ya procesamos este email_id, saltar
@@ -195,6 +202,7 @@ async function syncTenantEmails(tenant: Tenant): Promise<number> {
         deal_action: dealAction,
       },
     });
+    if (dealId) touched.push({ id: dealId, name: dealName || "tu propuesta" });
     synced++;
   }
 
@@ -203,14 +211,16 @@ async function syncTenantEmails(tenant: Tenant): Promise<number> {
     .update({ last_email_polled_at: new Date(now).toISOString() })
     .eq("id", tenant.id);
 
-  return synced;
+  return { synced, deals: touched };
 }
 
 // Punto de entrada del cron. Recorre tenants HubSpot activos y, para los
 // deals que entraron a la etapa de "propuesta" desde la última corrida,
 // crea una tarea en HubSpot + WhatsApp libre al comercial. No envía
 // nada al cliente final (eso requeriría template pagado).
-export async function pollProposalNotifications(): Promise<PollResult> {
+export async function pollProposalNotifications(
+  extraDeals: Record<string, TouchedDeal[]> = {}
+): Promise<PollResult> {
   const result: PollResult = { scanned: 0, notified: 0, errors: [] };
   const supabase = createAdminClient();
 
@@ -235,7 +245,7 @@ export async function pollProposalNotifications(): Promise<PollResult> {
 
   for (const tenant of tenants as Tenant[]) {
     try {
-      result.notified += await pollTenant(tenant);
+      result.notified += await pollTenant(tenant, extraDeals[tenant.id] || []);
     } catch (e: any) {
       const method = e?.config?.method?.toUpperCase();
       const url = e?.config?.url;
@@ -251,7 +261,7 @@ export async function pollProposalNotifications(): Promise<PollResult> {
   return result;
 }
 
-async function pollTenant(tenant: Tenant): Promise<number> {
+async function pollTenant(tenant: Tenant, extraDeals: TouchedDeal[] = []): Promise<number> {
   const supabase = createAdminClient();
   const crm = getCrmAdapter(tenant);
   const stageId = tenant.proposal_stage_id!;
@@ -277,35 +287,46 @@ async function pollTenant(tenant: Tenant): Promise<number> {
     limit: 50,
   });
 
-  const deals = (search.data.results || []) as Array<{
+  const found = (search.data.results || []) as Array<{
     id: string;
     properties: Record<string, string>;
   }>;
 
+  // El índice de búsqueda de HubSpot es eventualmente consistente: un deal
+  // recién creado/movido en esta misma corrida (por pollProposalEmails) puede
+  // no aparecer todavía. Lo sumamos explícitamente para notificar el mismo día.
+  const dealsById = new Map<string, string>();
+  for (const d of found) {
+    dealsById.set(d.id, d.properties.dealname || "tu propuesta");
+  }
+  for (const d of extraDeals) {
+    if (!dealsById.has(d.id)) dealsById.set(d.id, d.name || "tu propuesta");
+  }
+
   let queued = 0;
 
-  for (const deal of deals) {
+  for (const [dealId, dealName] of Array.from(dealsById.entries())) {
     // Dedup: si ya encolamos el follow-up para este deal, saltar
     const { data: prior } = await supabase
       .from("activity_log")
       .select("id")
       .eq("tenant_id", tenant.id)
       .eq("action", "proposal_followup_queued")
-      .filter("details->>deal_id", "eq", deal.id)
+      .filter("details->>deal_id", "eq", dealId)
       .limit(1);
 
     if (prior && prior.length > 0) continue;
 
     const assoc = await client.get(
-      `/crm/v3/objects/deals/${deal.id}/associations/contacts`
+      `/crm/v3/objects/deals/${dealId}/associations/contacts`
     );
     const contactId = assoc.data?.results?.[0]?.id;
     if (!contactId) {
-      console.warn(`[poll] deal ${deal.id} sin contacto asociado, omitiendo`);
+      console.warn(`[poll] deal ${dealId} sin contacto asociado, omitiendo`);
       await supabase.from("activity_log").insert({
         tenant_id: tenant.id,
         action: "proposal_skipped",
-        details: { deal_id: deal.id, reason: "no_contact" },
+        details: { deal_id: dealId, reason: "no_contact" },
       });
       continue;
     }
@@ -317,7 +338,6 @@ async function pollTenant(tenant: Tenant): Promise<number> {
     const firstName = (props.firstname || "").trim() || "el cliente";
     const lastName = (props.lastname || "").trim();
     const fullName = [firstName, lastName].filter(Boolean).join(" ");
-    const dealName = deal.properties.dealname || "tu propuesta";
     const phoneRaw = (props.phone || "").trim();
 
     // Crear tarea en HubSpot (due hoy en Bogotá)
@@ -331,7 +351,7 @@ async function pollTenant(tenant: Tenant): Promise<number> {
       await crm.createTask(contactId, taskTitle, todayBogota);
       taskOk = true;
     } catch (taskErr: any) {
-      console.error(`[poll] createTask falló para deal ${deal.id}:`, taskErr?.message);
+      console.error(`[poll] createTask falló para deal ${dealId}:`, taskErr?.message);
     }
 
     // WhatsApp libre al comercial (depende de service window abierta)
@@ -372,7 +392,7 @@ async function pollTenant(tenant: Tenant): Promise<number> {
       tenant_id: tenant.id,
       action: "proposal_followup_queued",
       details: {
-        deal_id: deal.id,
+        deal_id: dealId,
         deal_name: dealName,
         contact_id: contactId,
         contact_phone: phoneRaw || null,
