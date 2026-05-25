@@ -161,7 +161,15 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
   const todayInBogota = new Date().toLocaleDateString("en-CA", {
     timeZone: "America/Bogota",
   });
-  const dateContext = `\n\n📅 FECHA ACTUAL: ${todayInBogota} (zona horaria America/Bogota). Úsala como referencia obligatoria para los due_date de tareas: "el viernes" significa el próximo viernes a partir de esta fecha; "mañana" significa el día siguiente; etc.`;
+  const weekdayInBogota = new Date().toLocaleDateString("es-CO", {
+    timeZone: "America/Bogota",
+    weekday: "long",
+  });
+  const dateContext = `\n\n📅 FECHA ACTUAL: ${todayInBogota} (${weekdayInBogota}, zona horaria America/Bogota). Úsala como referencia obligatoria para los due_date de tareas. Reglas:
+- "mañana" = el día siguiente a la fecha actual.
+- "el viernes" / "este viernes" = el próximo viernes a partir de hoy (si hoy es viernes, asume que se refiere a hoy mismo salvo que el contexto diga lo contrario).
+- "el próximo lunes" / "el lunes que viene" = el lunes de la SEMANA SIGUIENTE. Si hoy ya es lunes, son 7 días después, NO hoy ni mañana. Lo mismo para cualquier otro día.
+- "en X días" = suma X días a la fecha actual.`;
 
   // Inyectamos los labels reales del pipeline para que el agente hable con la
   // misma terminología que ve el comercial en HubSpot. Si la consulta falla,
