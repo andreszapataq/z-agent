@@ -126,16 +126,22 @@ export class NativeAdapter implements CrmAdapter {
     return "Nota registrada en el contacto";
   }
 
-  async createTask(contactId: string, title: string, dueDate: string, _dueTime?: string): Promise<string> {
+  async createTask(input: {
+    contactId?: string;
+    dealId?: string;
+    title: string;
+    dueDate: string;
+    dueTime?: string;
+  }): Promise<string> {
     const { error } = await this.supabase.from("tasks").insert({
       tenant_id: this.tenantId,
-      contact_id: contactId,
-      title,
-      due_date: dueDate,
+      contact_id: input.contactId || null,
+      title: input.title,
+      due_date: input.dueDate,
       status: "pending",
     });
     if (error) throw error;
-    return `Tarea "${title}" creada`;
+    return `Tarea "${input.title}" creada`;
   }
 
   async listStages(): Promise<StageInfo[]> {

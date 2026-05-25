@@ -119,11 +119,19 @@ const TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "create_task",
-      description: "Crea una tarea o alerta de seguimiento. Si el usuario menciona una hora específica, pásala en due_time; si no, omítela y se usará 9am por defecto.",
+      description:
+        "Crea una tarea o alerta de seguimiento. PREFIERE pasar deal_id cuando la tarea se refiera a un negocio en curso — eso enlaza la tarea al deal, a TODOS sus contactos y a su empresa automáticamente, y la asigna al comercial dueño del deal. Si la tarea es solo sobre una persona (sin deal de por medio), pasa contact_id. Pasa due_time solo si el usuario indica una hora explícita.",
       parameters: {
         type: "object",
         properties: {
-          contact_id: { type: "string" },
+          deal_id: {
+            type: "string",
+            description: "ID del deal al que está vinculada la tarea. Si lo pasas, la tarea se asocia automáticamente al deal + sus contactos + su empresa, y se asigna al owner del deal. Úsalo siempre que el usuario mencione un negocio, deal, propuesta, cuenta o cliente con deal abierto.",
+          },
+          contact_id: {
+            type: "string",
+            description: "ID de un contacto específico. Úsalo cuando la tarea sea solo sobre la persona (sin deal asociado) o cuando quieras añadir un contacto extra además del deal.",
+          },
           title: { type: "string" },
           due_date: {
             type: "string",
@@ -134,7 +142,7 @@ const TOOLS: ChatCompletionTool[] = [
             description: "Hora en formato 24h HH:MM, hora Bogotá (ej. '14:30' para 2:30 pm). Opcional — solo úsala si el usuario indica una hora explícita ('a las 3 pm', 'en la mañana', etc.). Si no se especifica, el sistema usa 09:00.",
           },
         },
-        required: ["contact_id", "title", "due_date"],
+        required: ["title", "due_date"],
       },
     },
   },
@@ -192,6 +200,9 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
   const notesContext =
     `\n\n📝 REGLA DE NOTAS: cuando muevas un deal con un motivo concreto (p.ej. "pidió documentos técnicos", "objetó el precio", "pidió tiempo para decidir"), inmediatamente después del \`move_deal\` llama \`create_note\` describiendo brevemente el motivo. Pasa SIEMPRE ambos identificadores cuando los tengas: \`deal_id\` (del deal que moviste) Y \`contact_id\` (del contacto asociado, que viene en search_deal/search_contact). Así el comercial ve la nota tanto en la timeline del deal como en la del contacto sin importar desde dónde llegue.`;
 
+  const tasksContext =
+    `\n\n✅ REGLA DE TAREAS: cuando el usuario pida una tarea relacionada con un negocio/deal/propuesta/cuenta, SIEMPRE llama primero \`search_deal\` para obtener el \`deal_id\` y pásalo como \`deal_id\` en \`create_task\`. NO uses \`contact_id\` solo en este caso: pasar \`deal_id\` enlaza la tarea al deal + sus contactos + su empresa y la asigna al comercial dueño del deal automáticamente. Solo usa \`contact_id\` sin \`deal_id\` cuando la tarea sea explícitamente sobre una persona sin deal abierto (p.ej. "llamar a Juan el viernes" sin mencionar negocio).`;
+
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
@@ -199,7 +210,8 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
         (tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`) +
         dateContext +
         stagesContext +
-        notesContext,
+        notesContext +
+        tasksContext,
     },
     { role: "user", content: userMessage },
   ];
@@ -266,7 +278,13 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
             });
             break;
           case "create_task":
-            toolResult = await crm.createTask(input.contact_id, input.title, input.due_date, input.due_time);
+            toolResult = await crm.createTask({
+              contactId: input.contact_id,
+              dealId: input.deal_id,
+              title: input.title,
+              dueDate: input.due_date,
+              dueTime: input.due_time,
+            });
             break;
           default:
             toolResult = `Tool desconocido: ${name}`;

@@ -354,7 +354,7 @@ async function pollTenant(tenant: Tenant, extraDeals: TouchedDeal[] = []): Promi
 
     let taskOk = false;
     try {
-      await crm.createTask(contactId, taskTitle, todayBogota);
+      await crm.createTask({ contactId, dealId, title: taskTitle, dueDate: todayBogota });
       taskOk = true;
     } catch (taskErr: any) {
       console.error(`[poll] createTask falló para deal ${dealId}:`, taskErr?.message);

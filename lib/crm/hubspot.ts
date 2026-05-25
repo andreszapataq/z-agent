@@ -119,6 +119,25 @@ export class HubSpotAdapter implements CrmAdapter {
     };
   }
 
+  // Devuelve los contactos y la empresa asociados a un deal en HubSpot. Lo
+  // usamos en searchDeal para darle al agente el contexto completo del deal
+  // y en createTask para enlazar la tarea a todos los registros relevantes.
+  private async getDealAssociations(
+    dealId: string
+  ): Promise<{ contactIds: string[]; companyId?: string }> {
+    try {
+      const [contactsRes, companiesRes] = await Promise.all([
+        this.client.get(`/crm/v3/objects/deals/${dealId}/associations/contacts`).catch(() => null),
+        this.client.get(`/crm/v3/objects/deals/${dealId}/associations/companies`).catch(() => null),
+      ]);
+      const contactIds: string[] = (contactsRes?.data?.results || []).map((r: any) => r.id);
+      const companyId: string | undefined = companiesRes?.data?.results?.[0]?.id;
+      return { contactIds, companyId };
+    } catch {
+      return { contactIds: [] };
+    }
+  }
+
   async searchDeal(query: string): Promise<Deal[]> {
     // HubSpot's deals search `query` parameter sólo busca contra propiedades
     // del deal (dealname, description, etc.) — no incluye nombres de contacto
@@ -130,13 +149,24 @@ export class HubSpotAdapter implements CrmAdapter {
       limit: 5,
     });
 
-    const directDeals = (direct.data.results || []).map((d: any) => ({
-      id: d.id,
-      name: d.properties.dealname,
-      stage: d.properties.dealstage,
-      amount: d.properties.amount ? parseFloat(d.properties.amount) : undefined,
-    }));
-    if (directDeals.length > 0) return directDeals;
+    const directRaw = (direct.data.results || []) as any[];
+    if (directRaw.length > 0) {
+      const enriched = await Promise.all(
+        directRaw.map(async (d) => {
+          const assoc = await this.getDealAssociations(d.id);
+          return {
+            id: d.id,
+            name: d.properties.dealname,
+            stage: d.properties.dealstage,
+            amount: d.properties.amount ? parseFloat(d.properties.amount) : undefined,
+            contactIds: assoc.contactIds,
+            contactId: assoc.contactIds[0],
+            companyId: assoc.companyId,
+          };
+        })
+      );
+      return enriched;
+    }
 
     // Fallback: buscar contactos cuyo nombre/empresa/email matcheen el query
     // y traer los deals asociados a ellos.
@@ -174,13 +204,21 @@ export class HubSpotAdapter implements CrmAdapter {
       inputs: Array.from(dealToContact.keys()).slice(0, 10).map((id) => ({ id })),
     });
 
-    return (batch.data?.results || []).map((d: any) => ({
-      id: d.id,
-      name: d.properties?.dealname,
-      stage: d.properties?.dealstage,
-      amount: d.properties?.amount ? parseFloat(d.properties.amount) : undefined,
-      contactId: dealToContact.get(d.id),
-    }));
+    const dealsRaw = (batch.data?.results || []) as any[];
+    return Promise.all(
+      dealsRaw.map(async (d) => {
+        const assoc = await this.getDealAssociations(d.id);
+        return {
+          id: d.id,
+          name: d.properties?.dealname,
+          stage: d.properties?.dealstage,
+          amount: d.properties?.amount ? parseFloat(d.properties.amount) : undefined,
+          contactIds: assoc.contactIds.length ? assoc.contactIds : [dealToContact.get(d.id)!],
+          contactId: dealToContact.get(d.id),
+          companyId: assoc.companyId,
+        };
+      })
+    );
   }
 
   async createDeal(input: { contactId: string; name: string; amount?: number; stage?: DealStage }): Promise<Deal> {
@@ -259,12 +297,68 @@ export class HubSpotAdapter implements CrmAdapter {
     }
   }
 
-  async createTask(contactId: string, title: string, dueDate: string, dueTime?: string): Promise<string> {
+  async createTask(input: {
+    contactId?: string;
+    dealId?: string;
+    title: string;
+    dueDate: string;
+    dueTime?: string;
+  }): Promise<string> {
+    const { contactId, dealId, title, dueDate, dueTime } = input;
     // YYYY-MM-DD without a time parses as midnight UTC, which is the prior day in Bogotá; anchor a la hora indicada (default 9am Bogotá).
     const time = dueTime && /^\d{2}:\d{2}$/.test(dueTime) ? dueTime : "09:00";
     const dueTs = /^\d{4}-\d{2}-\d{2}$/.test(dueDate)
       ? new Date(`${dueDate}T${time}:00-05:00`).getTime()
       : new Date(dueDate).getTime();
+
+    // Si la tarea viene asociada a un deal, traemos sus contactos + empresa y
+    // también el owner del deal para que la tarea quede a nombre del comercial
+    // que maneja la oportunidad (no del owner default del tenant).
+    let dealContactIds: string[] = [];
+    let dealCompanyId: string | undefined;
+    let dealOwnerId: string | undefined;
+    if (dealId) {
+      const assoc = await this.getDealAssociations(dealId);
+      dealContactIds = assoc.contactIds;
+      dealCompanyId = assoc.companyId;
+      try {
+        const dealRes = await this.client.get(`/crm/v3/objects/deals/${dealId}`, {
+          params: { properties: "hubspot_owner_id" },
+        });
+        dealOwnerId = dealRes.data?.properties?.hubspot_owner_id || undefined;
+      } catch {
+        // si falla, caemos al owner default
+      }
+    }
+
+    // Construimos la lista de asociaciones: deal + empresa + todos los
+    // contactos relevantes (los del deal y/o el contact_id explícito).
+    const contactIdSet = new Set<string>();
+    if (contactId) contactIdSet.add(contactId);
+    for (const cid of dealContactIds) contactIdSet.add(cid);
+
+    const associations: Array<{ to: { id: string }; types: any[] }> = [];
+    for (const cid of contactIdSet) {
+      associations.push({
+        to: { id: cid },
+        types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 204 }],
+      });
+    }
+    if (dealId) {
+      associations.push({
+        to: { id: dealId },
+        types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 216 }],
+      });
+    }
+    if (dealCompanyId) {
+      associations.push({
+        to: { id: dealCompanyId },
+        types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 192 }],
+      });
+    }
+
+    const ownerId = dealOwnerId || this.ownerId;
+
     try {
       await this.client.post("/crm/v3/objects/tasks", {
         properties: {
@@ -273,16 +367,16 @@ export class HubSpotAdapter implements CrmAdapter {
           hs_timestamp: dueTs,
           hs_task_reminders: String(dueTs),
           // HubSpot solo dispara la notificación del recordatorio si la tarea tiene owner.
-          ...(this.ownerId ? { hubspot_owner_id: this.ownerId } : {}),
+          ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
         },
-        associations: [
-          {
-            to: { id: contactId },
-            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 204 }],
-          },
-        ],
+        associations,
       });
-      return `Tarea "${title}" creada en HubSpot`;
+      const targets: string[] = [];
+      if (dealId) targets.push("deal");
+      if (contactIdSet.size > 0) targets.push(contactIdSet.size > 1 ? `${contactIdSet.size} contactos` : "contacto");
+      if (dealCompanyId) targets.push("empresa");
+      const where = targets.length ? ` (asociada al ${targets.join(", ")})` : "";
+      return `Tarea "${title}" creada en HubSpot${where}`;
     } catch (err: any) {
       if (err?.response?.status === 403) {
         return `Tarea "${title}" registrada (HubSpot no expone el scope de tareas en este plan; queda en el log de actividad)`;
