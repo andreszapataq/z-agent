@@ -172,7 +172,13 @@ async function syncTenantEmails(tenant: Tenant): Promise<{ synced: number; deals
 
     if (!dealId) {
       const subject = (email.properties.hs_email_subject || "").trim();
-      dealName = subject || `Propuesta — ${contactName}`;
+      // Convención: "{Company} — {Subject}" para que el cliente sea identificable
+      // en el kanban y en la búsqueda del agente. Si el contacto no tiene
+      // company en HubSpot, caemos al nombre del contacto como label del cliente.
+      const customerLabel = (cprops.company || "").trim() || contactName;
+      dealName = subject
+        ? `${customerLabel} — ${subject}`
+        : `${customerLabel} — Propuesta`;
       const created = await client.post("/crm/v3/objects/deals", {
         properties: {
           dealname: dealName,

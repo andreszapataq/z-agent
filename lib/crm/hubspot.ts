@@ -118,18 +118,60 @@ export class HubSpotAdapter implements CrmAdapter {
   }
 
   async searchDeal(query: string): Promise<Deal[]> {
-    // Top-level `query` searches dealname plus associated company/contact properties; a single-property filterGroup missed those.
-    const res = await this.client.post("/crm/v3/objects/deals/search", {
+    // HubSpot's deals search `query` parameter sólo busca contra propiedades
+    // del deal (dealname, description, etc.) — no incluye nombres de contacto
+    // ni de empresa asociados. Por eso intentamos primero el match directo,
+    // y si vacía, caemos a buscar contactos por el query y traemos sus deals.
+    const direct = await this.client.post("/crm/v3/objects/deals/search", {
       query,
       properties: ["dealname", "dealstage", "amount"],
       limit: 5,
     });
 
-    return (res.data.results || []).map((d: any) => ({
+    const directDeals = (direct.data.results || []).map((d: any) => ({
       id: d.id,
       name: d.properties.dealname,
       stage: d.properties.dealstage,
       amount: d.properties.amount ? parseFloat(d.properties.amount) : undefined,
+    }));
+    if (directDeals.length > 0) return directDeals;
+
+    // Fallback: buscar contactos cuyo nombre/empresa/email matcheen el query
+    // y traer los deals asociados a ellos.
+    const contactsRes = await this.client.post("/crm/v3/objects/contacts/search", {
+      query,
+      properties: ["firstname", "lastname", "company"],
+      limit: 5,
+    });
+    const contactIds: string[] = (contactsRes.data.results || []).map((c: any) => c.id);
+    if (contactIds.length === 0) return [];
+
+    const dealIds = new Set<string>();
+    await Promise.all(
+      contactIds.map(async (cid) => {
+        try {
+          const r = await this.client.get(
+            `/crm/v3/objects/contacts/${cid}/associations/deals`
+          );
+          for (const a of r.data?.results || []) dealIds.add(a.id);
+        } catch {
+          // ignoramos errores por contacto — seguimos con los demás
+        }
+      })
+    );
+
+    if (dealIds.size === 0) return [];
+
+    const batch = await this.client.post("/crm/v3/objects/deals/batch/read", {
+      properties: ["dealname", "dealstage", "amount"],
+      inputs: Array.from(dealIds).slice(0, 10).map((id) => ({ id })),
+    });
+
+    return (batch.data?.results || []).map((d: any) => ({
+      id: d.id,
+      name: d.properties?.dealname,
+      stage: d.properties?.dealstage,
+      amount: d.properties?.amount ? parseFloat(d.properties.amount) : undefined,
     }));
   }
 
@@ -169,21 +211,35 @@ export class HubSpotAdapter implements CrmAdapter {
     return `Deal movido a "${stage}"`;
   }
 
-  async createNote(contactId: string, body: string): Promise<string> {
+  async createNote(input: { contactId?: string; dealId?: string; body: string }): Promise<string> {
+    if (!input.contactId && !input.dealId) {
+      throw new Error("createNote requiere al menos contactId o dealId");
+    }
+    // HubSpot associationTypeIds (HUBSPOT_DEFINED): note↔contact = 202, note↔deal = 214.
+    const associations: any[] = [];
+    if (input.contactId) {
+      associations.push({
+        to: { id: input.contactId },
+        types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 202 }],
+      });
+    }
+    if (input.dealId) {
+      associations.push({
+        to: { id: input.dealId },
+        types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 214 }],
+      });
+    }
     try {
       await this.client.post("/crm/v3/objects/notes", {
         properties: {
-          hs_note_body: body,
+          hs_note_body: input.body,
           hs_timestamp: Date.now(),
         },
-        associations: [
-          {
-            to: { id: contactId },
-            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 202 }],
-          },
-        ],
+        associations,
       });
-      return "Nota registrada en HubSpot";
+      if (input.dealId && input.contactId) return "Nota registrada en el deal y en el contacto";
+      if (input.dealId) return "Nota registrada en el deal";
+      return "Nota registrada en el contacto";
     } catch (err: any) {
       // Some HubSpot plans don't expose `crm.objects.notes.write`. The note
       // body is already persisted in `activity_log` by the agent loop, so we

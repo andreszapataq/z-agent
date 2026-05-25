@@ -110,14 +110,20 @@ export class NativeAdapter implements CrmAdapter {
     return `Deal movido a "${stage}"`;
   }
 
-  async createNote(contactId: string, body: string): Promise<string> {
+  async createNote(input: { contactId?: string; dealId?: string; body: string }): Promise<string> {
+    if (!input.contactId && !input.dealId) {
+      throw new Error("createNote requiere al menos contactId o dealId");
+    }
     const { error } = await this.supabase.from("notes").insert({
       tenant_id: this.tenantId,
-      contact_id: contactId,
-      body,
+      contact_id: input.contactId || null,
+      deal_id: input.dealId || null,
+      body: input.body,
     });
     if (error) throw error;
-    return "Nota registrada";
+    if (input.dealId && input.contactId) return "Nota registrada (deal + contacto)";
+    if (input.dealId) return "Nota registrada en el deal";
+    return "Nota registrada en el contacto";
   }
 
   async createTask(contactId: string, title: string, dueDate: string): Promise<string> {

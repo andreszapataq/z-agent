@@ -102,14 +102,16 @@ const TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "create_note",
-      description: "Registra una nota de actividad sobre un contacto",
+      description:
+        "Registra una nota de actividad. Asóciala al deal cuando la nota habla del avance del negocio (motivo de cambio de etapa, pedido específico del cliente sobre la propuesta, etc.). Asóciala al contacto cuando es info general de la persona. Puedes pasar ambas si aplica.",
       parameters: {
         type: "object",
         properties: {
-          contact_id: { type: "string" },
+          deal_id: { type: "string", description: "ID del deal donde anclar la nota (preferido cuando el contexto es del negocio)" },
+          contact_id: { type: "string", description: "ID del contacto donde anclar la nota" },
           note: { type: "string" },
         },
-        required: ["contact_id", "note"],
+        required: ["note"],
       },
     },
   },
@@ -175,13 +177,17 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
     console.error("[listStages error]", e);
   }
 
+  const notesContext =
+    `\n\n📝 REGLA DE NOTAS: cuando muevas un deal con un motivo concreto (p.ej. "pidió documentos técnicos", "objetó el precio", "pidió tiempo para decidir"), inmediatamente después del \`move_deal\` llama \`create_note\` con el \`deal_id\` del mismo deal y describe brevemente el motivo. Así el comercial ve el contexto en la timeline del deal sin tener que preguntar.`;
+
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
       content:
         (tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`) +
         dateContext +
-        stagesContext,
+        stagesContext +
+        notesContext,
     },
     { role: "user", content: userMessage },
   ];
@@ -241,7 +247,11 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
             toolResult = await crm.moveDeal(input.deal_id, input.stage as DealStage);
             break;
           case "create_note":
-            toolResult = await crm.createNote(input.contact_id, input.note);
+            toolResult = await crm.createNote({
+              contactId: input.contact_id,
+              dealId: input.deal_id,
+              body: input.note,
+            });
             break;
           case "create_task":
             toolResult = await crm.createTask(input.contact_id, input.title, input.due_date);

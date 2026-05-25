@@ -55,6 +55,7 @@ export default function AdminPage() {
 
   const [pipelines, setPipelines] = useState<PipelineOption[] | null>(null);
   const [loadingPipelines, setLoadingPipelines] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
 
   useEffect(() => {
     loadTenants();
@@ -151,6 +152,34 @@ export default function AdminPage() {
       showToast("Error de red consultando HubSpot", "error");
     } finally {
       setLoadingPipelines(false);
+    }
+  }
+
+  async function backfillDealnames() {
+    if (!editing) {
+      showToast("Guarda primero el tenant", "error");
+      return;
+    }
+    if (!confirm(
+      "Esto recorrerá todos los deals abiertos en HubSpot y prefijará con el nombre de la empresa/contacto los que aún no lo tengan. ¿Continuar?"
+    )) return;
+
+    setBackfilling(true);
+    try {
+      const res = await fetch(`/api/admin/tenants/${editing}/backfill-dealnames`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error || "Error en backfill", "error");
+        return;
+      }
+      const msg = `Backfill listo: ${data.renamed} renombrados, ${data.skipped} omitidos (${data.scanned} escaneados${data.errors?.length ? `, ${data.errors.length} errores` : ""})`;
+      showToast(msg);
+    } catch {
+      showToast("Error de red en backfill", "error");
+    } finally {
+      setBackfilling(false);
     }
   }
 
@@ -627,6 +656,31 @@ export default function AdminPage() {
                     />
                   </div>
                 ))}
+
+                <div style={{ marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border2)" }}>
+                  <div style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+                    Higiene de deals
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--text3)", margin: "0 0 12px" }}>
+                    Renombra los deals existentes para que empiecen con el nombre de la empresa
+                    (o contacto) asociada — la convención que aplica también el cron para deals
+                    nuevos. Operación idempotente: deals que ya incluyan el cliente no se tocan.
+                  </p>
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.btnOutline} ${styles.btnSm}`}
+                    onClick={backfillDealnames}
+                    disabled={backfilling || !editing}
+                    style={{ width: "100%" }}
+                  >
+                    {backfilling ? "Procesando…" : "Renombrar deals según convención"}
+                  </button>
+                  {!editing && (
+                    <p style={{ fontSize: 11, color: "var(--text3)", marginTop: 8 }}>
+                      Disponible al editar un tenant existente.
+                    </p>
+                  )}
+                </div>
               </>
             )}
 
