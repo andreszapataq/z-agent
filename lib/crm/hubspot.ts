@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from "axios";
-import { CrmAdapter, Contact, Deal, DealStage } from "./types";
+import { CrmAdapter, Contact, Deal, DealStage, StageInfo } from "./types";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
 // con su propio mapeo via `tenant.stage_map`.
@@ -7,15 +7,25 @@ export const DEFAULT_HUBSPOT_STAGE_MAP: Record<DealStage, string> = {
   saludo: "appointmentscheduled",
   "presentación": "qualifiedtobuy",
   propuesta: "contractsent",
+  "negociación": "decisionmakerboughtin",
   cierre: "closedwon",
   perdido: "closedlost",
 };
 
+// Cache in-memory de pipelines por token. TTL corto porque corre en serverless
+// (cada instancia warm reaprovecha; cold start refetchea). Evita pegarle a
+// HubSpot en cada mensaje de WhatsApp solo para resolver labels.
+const PIPELINE_CACHE_TTL_MS = 10 * 60 * 1000;
+type StageMeta = { label: string; displayOrder: number };
+const stageMetaCache = new Map<string, { data: Map<string, StageMeta>; expiresAt: number }>();
+
 export class HubSpotAdapter implements CrmAdapter {
   private client: AxiosInstance;
   private stageMap: Record<string, string>;
+  private token: string;
 
   constructor(token: string, stageMap?: Record<string, string> | null) {
+    this.token = token;
     this.client = axios.create({
       baseURL: "https://api.hubapi.com",
       headers: { Authorization: `Bearer ${token}` },
@@ -26,6 +36,45 @@ export class HubSpotAdapter implements CrmAdapter {
 
   private resolveStage(stage: DealStage): string {
     return this.stageMap[stage] || stage;
+  }
+
+  private async getStageMeta(): Promise<Map<string, StageMeta>> {
+    const cached = stageMetaCache.get(this.token);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
+
+    const res = await this.client.get("/crm/v3/pipelines/deals");
+    const meta = new Map<string, StageMeta>();
+    for (const p of res.data.results || []) {
+      for (const s of p.stages || []) {
+        // Si el mismo stageId aparece en varios pipelines (raro), gana el primero.
+        if (!meta.has(s.id)) {
+          meta.set(s.id, { label: s.label, displayOrder: s.displayOrder ?? 0 });
+        }
+      }
+    }
+    stageMetaCache.set(this.token, { data: meta, expiresAt: Date.now() + PIPELINE_CACHE_TTL_MS });
+    return meta;
+  }
+
+  async listStages(): Promise<StageInfo[]> {
+    const entries = Object.entries(this.stageMap) as Array<[DealStage, string]>;
+    try {
+      const meta = await this.getStageMeta();
+      return entries
+        .map(([slug, stageId]) => {
+          const m = meta.get(stageId);
+          return {
+            slug,
+            label: m?.label || slug,
+            displayOrder: m?.displayOrder,
+          };
+        })
+        .sort((a, b) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999));
+    } catch {
+      // Si HubSpot no responde, devolvemos los slugs como label — el agente
+      // sigue funcionando, simplemente sin los labels reales del pipeline.
+      return entries.map(([slug]) => ({ slug, label: slug }));
+    }
   }
 
   async searchContact(query: string): Promise<Contact[]> {

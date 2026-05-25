@@ -25,7 +25,7 @@ type Tenant = {
 type StageOption = { id: string; label: string };
 type PipelineOption = { id: string; label: string; stages: StageOption[] };
 
-const STAGE_KEYS = ["saludo", "presentación", "propuesta", "cierre", "perdido"] as const;
+const STAGE_KEYS = ["saludo", "presentación", "propuesta", "negociación", "cierre", "perdido"] as const;
 
 const COLOR_CLASSES = [styles.avTeal, styles.avAmber, styles.avPurple];
 

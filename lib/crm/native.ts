@@ -1,5 +1,14 @@
 import { createAdminClient } from "../supabase";
-import { CrmAdapter, Contact, Deal, DealStage } from "./types";
+import { CrmAdapter, Contact, Deal, DealStage, StageInfo } from "./types";
+
+const NATIVE_STAGE_LABELS: Array<{ slug: DealStage; label: string }> = [
+  { slug: "saludo", label: "Nuevo contacto" },
+  { slug: "presentación", label: "Presentación enviada" },
+  { slug: "propuesta", label: "Propuesta económica enviada" },
+  { slug: "negociación", label: "Negociación" },
+  { slug: "cierre", label: "Cliente ganado" },
+  { slug: "perdido", label: "Perdido" },
+];
 
 export class NativeAdapter implements CrmAdapter {
   private tenantId: string;
@@ -121,5 +130,9 @@ export class NativeAdapter implements CrmAdapter {
     });
     if (error) throw error;
     return `Tarea "${title}" creada`;
+  }
+
+  async listStages(): Promise<StageInfo[]> {
+    return NATIVE_STAGE_LABELS.map((s, i) => ({ ...s, displayOrder: i }));
   }
 }

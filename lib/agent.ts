@@ -72,7 +72,7 @@ const TOOLS: ChatCompletionTool[] = [
           amount: { type: "number", description: "Monto esperado en moneda local (opcional)" },
           stage: {
             type: "string",
-            enum: ["saludo", "presentación", "propuesta", "cierre", "perdido"],
+            enum: ["saludo", "presentación", "propuesta", "negociación", "cierre", "perdido"],
             description: "Etapa inicial del deal (por defecto: saludo)",
           },
         },
@@ -91,7 +91,7 @@ const TOOLS: ChatCompletionTool[] = [
           deal_id: { type: "string" },
           stage: {
             type: "string",
-            enum: ["saludo", "presentación", "propuesta", "cierre", "perdido"],
+            enum: ["saludo", "presentación", "propuesta", "negociación", "cierre", "perdido"],
           },
         },
         required: ["deal_id", "stage"],
@@ -161,12 +161,27 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
   });
   const dateContext = `\n\n📅 FECHA ACTUAL: ${todayInBogota} (zona horaria America/Bogota). Úsala como referencia obligatoria para los due_date de tareas: "el viernes" significa el próximo viernes a partir de esta fecha; "mañana" significa el día siguiente; etc.`;
 
+  // Inyectamos los labels reales del pipeline para que el agente hable con la
+  // misma terminología que ve el comercial en HubSpot. Si la consulta falla,
+  // listStages devuelve los slugs como label y el agente sigue operando.
+  let stagesContext = "";
+  try {
+    const stages = await crm.listStages();
+    if (stages.length > 0) {
+      const lines = stages.map((s) => `- \`${s.slug}\` → "${s.label}"`).join("\n");
+      stagesContext = `\n\n📊 ETAPAS DEL PIPELINE (orden real del CRM del tenant):\n${lines}\n\nCuando hables con el usuario, usa los labels (la parte entre comillas). En los tools \`move_deal\` y \`create_deal\` usa el slug (la parte con backticks).`;
+    }
+  } catch (e) {
+    console.error("[listStages error]", e);
+  }
+
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
       content:
         (tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`) +
-        dateContext,
+        dateContext +
+        stagesContext,
     },
     { role: "user", content: userMessage },
   ];

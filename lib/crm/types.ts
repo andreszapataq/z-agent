@@ -21,7 +21,19 @@ export type Deal = {
   contactId?: string;
 };
 
-export type DealStage = "saludo" | "presentación" | "propuesta" | "cierre" | "perdido";
+export type DealStage =
+  | "saludo"
+  | "presentación"
+  | "propuesta"
+  | "negociación"
+  | "cierre"
+  | "perdido";
+
+export type StageInfo = {
+  slug: DealStage;
+  label: string;
+  displayOrder?: number;
+};
 
 export interface CrmAdapter {
   searchContact(query: string): Promise<Contact[]>;
@@ -31,4 +43,5 @@ export interface CrmAdapter {
   moveDeal(dealId: string, stage: DealStage): Promise<string>;
   createNote(contactId: string, body: string): Promise<string>;
   createTask(contactId: string, title: string, dueDate: string): Promise<string>;
+  listStages(): Promise<StageInfo[]>;
 }
