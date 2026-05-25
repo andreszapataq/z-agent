@@ -258,9 +258,9 @@ export class HubSpotAdapter implements CrmAdapter {
   }
 
   async createTask(contactId: string, title: string, dueDate: string): Promise<string> {
-    // YYYY-MM-DD without a time parses as midnight UTC, which is the prior day in Bogotá; anchor to 5pm Bogotá so the task displays on the intended local date.
+    // YYYY-MM-DD without a time parses as midnight UTC, which is the prior day in Bogotá; anchor to 9am Bogotá so las llamadas comerciales arranquen a primera hora del día indicado.
     const dueTs = /^\d{4}-\d{2}-\d{2}$/.test(dueDate)
-      ? new Date(`${dueDate}T17:00:00-05:00`).getTime()
+      ? new Date(`${dueDate}T09:00:00-05:00`).getTime()
       : new Date(dueDate).getTime();
     try {
       await this.client.post("/crm/v3/objects/tasks", {
@@ -268,6 +268,7 @@ export class HubSpotAdapter implements CrmAdapter {
           hs_task_subject: title,
           hs_task_status: "NOT_STARTED",
           hs_timestamp: dueTs,
+          hs_task_reminders: String(dueTs),
         },
         associations: [
           {
