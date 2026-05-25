@@ -126,7 +126,7 @@ export class NativeAdapter implements CrmAdapter {
     return "Nota registrada en el contacto";
   }
 
-  async createTask(contactId: string, title: string, dueDate: string): Promise<string> {
+  async createTask(contactId: string, title: string, dueDate: string, _dueTime?: string): Promise<string> {
     const { error } = await this.supabase.from("tasks").insert({
       tenant_id: this.tenantId,
       contact_id: contactId,

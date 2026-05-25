@@ -23,8 +23,9 @@ export class HubSpotAdapter implements CrmAdapter {
   private client: AxiosInstance;
   private stageMap: Record<string, string>;
   private token: string;
+  private ownerId: string | null;
 
-  constructor(token: string, stageMap?: Record<string, string> | null) {
+  constructor(token: string, stageMap?: Record<string, string> | null, ownerId?: string | null) {
     this.token = token;
     this.client = axios.create({
       baseURL: "https://api.hubapi.com",
@@ -32,6 +33,7 @@ export class HubSpotAdapter implements CrmAdapter {
     });
     // El mapeo del tenant tiene prioridad; lo que falte cae al default.
     this.stageMap = { ...DEFAULT_HUBSPOT_STAGE_MAP, ...(stageMap || {}) };
+    this.ownerId = ownerId || null;
   }
 
   private resolveStage(stage: DealStage): string {
@@ -257,10 +259,11 @@ export class HubSpotAdapter implements CrmAdapter {
     }
   }
 
-  async createTask(contactId: string, title: string, dueDate: string): Promise<string> {
-    // YYYY-MM-DD without a time parses as midnight UTC, which is the prior day in Bogotá; anchor to 9am Bogotá so las llamadas comerciales arranquen a primera hora del día indicado.
+  async createTask(contactId: string, title: string, dueDate: string, dueTime?: string): Promise<string> {
+    // YYYY-MM-DD without a time parses as midnight UTC, which is the prior day in Bogotá; anchor a la hora indicada (default 9am Bogotá).
+    const time = dueTime && /^\d{2}:\d{2}$/.test(dueTime) ? dueTime : "09:00";
     const dueTs = /^\d{4}-\d{2}-\d{2}$/.test(dueDate)
-      ? new Date(`${dueDate}T09:00:00-05:00`).getTime()
+      ? new Date(`${dueDate}T${time}:00-05:00`).getTime()
       : new Date(dueDate).getTime();
     try {
       await this.client.post("/crm/v3/objects/tasks", {
@@ -269,6 +272,8 @@ export class HubSpotAdapter implements CrmAdapter {
           hs_task_status: "NOT_STARTED",
           hs_timestamp: dueTs,
           hs_task_reminders: String(dueTs),
+          // HubSpot solo dispara la notificación del recordatorio si la tarea tiene owner.
+          ...(this.ownerId ? { hubspot_owner_id: this.ownerId } : {}),
         },
         associations: [
           {

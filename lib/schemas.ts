@@ -15,6 +15,12 @@ export const tenantCreateSchema = z.object({
     .nullable()
     .optional(),
   hubspot_token: z.string().max(2048).nullable().optional(),
+  hubspot_owner_id: z
+    .string()
+    .regex(/^\d+$/, "hubspot_owner_id debe ser numérico (ID de HubSpot)")
+    .max(32)
+    .nullable()
+    .optional(),
   system_prompt: z.string().max(8000).nullable().optional(),
 
   // Proposal notification config

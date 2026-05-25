@@ -42,6 +42,6 @@ export interface CrmAdapter {
   createDeal(input: { contactId: string; name: string; amount?: number; stage?: DealStage }): Promise<Deal>;
   moveDeal(dealId: string, stage: DealStage): Promise<string>;
   createNote(input: { contactId?: string; dealId?: string; body: string }): Promise<string>;
-  createTask(contactId: string, title: string, dueDate: string): Promise<string>;
+  createTask(contactId: string, title: string, dueDate: string, dueTime?: string): Promise<string>;
   listStages(): Promise<StageInfo[]>;
 }

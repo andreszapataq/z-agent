@@ -9,7 +9,7 @@ export function getCrmAdapter(tenant: Tenant): CrmAdapter {
       if (!tenant.hubspot_token) {
         throw new Error(`Tenant ${tenant.id}: crm_type es 'hubspot' pero falta el token`);
       }
-      return new HubSpotAdapter(tenant.hubspot_token, tenant.stage_map);
+      return new HubSpotAdapter(tenant.hubspot_token, tenant.stage_map, tenant.hubspot_owner_id);
 
     case "native":
       return new NativeAdapter(tenant.id);

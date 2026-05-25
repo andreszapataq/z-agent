@@ -9,6 +9,7 @@ export type Tenant = {
   whatsapp_token: string | null;
   owner_number: string | null;
   hubspot_token: string | null;
+  hubspot_owner_id: string | null;
   system_prompt: string | null;
 
   // Cuando un deal entra a la etapa de propuesta, el comercial recibe

@@ -15,6 +15,7 @@ type Tenant = {
   whatsapp_token: string | null;
   owner_number: string | null;
   hubspot_token: string | null;
+  hubspot_owner_id: string | null;
   system_prompt: string | null;
   proposal_stage_id: string | null;
   proposal_email_template_id: string | null;
@@ -47,6 +48,7 @@ export default function AdminPage() {
     owner_number: "",
     whatsapp_token: "",
     hubspot_token: "",
+    hubspot_owner_id: "",
     system_prompt: "",
     proposal_stage_id: "",
     proposal_email_template_id: "",
@@ -55,6 +57,8 @@ export default function AdminPage() {
 
   const [pipelines, setPipelines] = useState<PipelineOption[] | null>(null);
   const [loadingPipelines, setLoadingPipelines] = useState(false);
+  const [owners, setOwners] = useState<{ id: string; name: string; email: string }[] | null>(null);
+  const [loadingOwners, setLoadingOwners] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
 
   useEffect(() => {
@@ -99,6 +103,7 @@ export default function AdminPage() {
 
   function openModal(tenant?: Tenant) {
     setPipelines(null);
+    setOwners(null);
     if (tenant) {
       setEditing(tenant.id);
       setForm({
@@ -109,6 +114,7 @@ export default function AdminPage() {
         owner_number: tenant.owner_number || "",
         whatsapp_token: tenant.whatsapp_token || "",
         hubspot_token: tenant.hubspot_token || "",
+        hubspot_owner_id: tenant.hubspot_owner_id || "",
         system_prompt: tenant.system_prompt || "",
         proposal_stage_id: tenant.proposal_stage_id || "",
         proposal_email_template_id: tenant.proposal_email_template_id || "",
@@ -124,6 +130,7 @@ export default function AdminPage() {
         owner_number: "",
         whatsapp_token: "",
         hubspot_token: "",
+        hubspot_owner_id: "",
         system_prompt: "",
         proposal_stage_id: "",
         proposal_email_template_id: "",
@@ -152,6 +159,28 @@ export default function AdminPage() {
       showToast("Error de red consultando HubSpot", "error");
     } finally {
       setLoadingPipelines(false);
+    }
+  }
+
+  async function loadHubspotOwners() {
+    if (!editing) {
+      showToast("Guarda primero el tenant para poder consultar HubSpot", "error");
+      return;
+    }
+    setLoadingOwners(true);
+    try {
+      const res = await fetch(`/api/admin/hubspot-owners/${editing}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || "No se pudo consultar HubSpot", "error");
+        return;
+      }
+      const data = await res.json();
+      setOwners(data.owners || []);
+    } catch {
+      showToast("Error de red consultando HubSpot", "error");
+    } finally {
+      setLoadingOwners(false);
     }
   }
 
@@ -205,6 +234,7 @@ export default function AdminPage() {
       "owner_number",
       "whatsapp_token",
       "hubspot_token",
+      "hubspot_owner_id",
       "system_prompt",
       "proposal_stage_id",
       "proposal_email_template_id",
@@ -527,6 +557,72 @@ export default function AdminPage() {
                   value={form.hubspot_token}
                   onChange={(e) => setForm({ ...form, hubspot_token: e.target.value })}
                 />
+              </div>
+            )}
+
+            {form.crm_type === "hubspot" && (
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>Comercial dueño de las tareas (HubSpot)</label>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <input
+                    className={styles.formInput}
+                    placeholder="ej. 12345678"
+                    value={form.hubspot_owner_id}
+                    onChange={(e) => setForm({ ...form, hubspot_owner_id: e.target.value })}
+                    style={{ flex: 1 }}
+                  />
+                  <button
+                    type="button"
+                    className={`${styles.btn} ${styles.btnOutline} ${styles.btnSm}`}
+                    onClick={loadHubspotOwners}
+                    disabled={loadingOwners || !editing}
+                  >
+                    {loadingOwners ? "Cargando…" : "Cargar comerciales"}
+                  </button>
+                </div>
+                {!editing && (
+                  <p style={{ fontSize: 11, color: "var(--text3)" }}>
+                    Guarda primero el tenant con el token de HubSpot para poder listar los comerciales.
+                  </p>
+                )}
+                {owners && owners.length === 0 && (
+                  <p style={{ fontSize: 12, color: "var(--text3)" }}>
+                    Este tenant no tiene owners en HubSpot.
+                  </p>
+                )}
+                {owners && owners.length > 0 && (
+                  <div style={{ background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 8, padding: 8, marginBottom: 8, maxHeight: 200, overflowY: "auto" }}>
+                    {owners.map((o) => (
+                      <button
+                        key={o.id}
+                        type="button"
+                        onClick={() => setForm({ ...form, hubspot_owner_id: o.id })}
+                        style={{
+                          display: "block",
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "6px 8px",
+                          background: form.hubspot_owner_id === o.id ? "var(--bg3)" : "transparent",
+                          border: "none",
+                          borderRadius: 4,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 12,
+                          color: "var(--text2)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <span style={{ color: "var(--text1)" }}>{o.name}</span>
+                        {" · "}
+                        <span style={{ color: "var(--text3)" }}>{o.email}</span>
+                        {" · "}
+                        <span style={{ color: "var(--text3)" }}>id: {o.id}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <p style={{ fontSize: 11, color: "var(--text3)" }}>
+                  Si lo dejas vacío, las tareas quedan sin propietario y HubSpot no envía recordatorios al comercial.
+                </p>
               </div>
             )}
 
