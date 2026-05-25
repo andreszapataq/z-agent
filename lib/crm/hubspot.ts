@@ -146,25 +146,30 @@ export class HubSpotAdapter implements CrmAdapter {
     const contactIds: string[] = (contactsRes.data.results || []).map((c: any) => c.id);
     if (contactIds.length === 0) return [];
 
-    const dealIds = new Set<string>();
+    // Mapeo deal_id → primer contact_id que lo trajo, para devolverlo al agente
+    // (le permite anclar notas tanto al deal como al contacto sin tener que
+    // hacer una búsqueda adicional).
+    const dealToContact = new Map<string, string>();
     await Promise.all(
       contactIds.map(async (cid) => {
         try {
           const r = await this.client.get(
             `/crm/v3/objects/contacts/${cid}/associations/deals`
           );
-          for (const a of r.data?.results || []) dealIds.add(a.id);
+          for (const a of r.data?.results || []) {
+            if (!dealToContact.has(a.id)) dealToContact.set(a.id, cid);
+          }
         } catch {
           // ignoramos errores por contacto — seguimos con los demás
         }
       })
     );
 
-    if (dealIds.size === 0) return [];
+    if (dealToContact.size === 0) return [];
 
     const batch = await this.client.post("/crm/v3/objects/deals/batch/read", {
       properties: ["dealname", "dealstage", "amount"],
-      inputs: Array.from(dealIds).slice(0, 10).map((id) => ({ id })),
+      inputs: Array.from(dealToContact.keys()).slice(0, 10).map((id) => ({ id })),
     });
 
     return (batch.data?.results || []).map((d: any) => ({
@@ -172,6 +177,7 @@ export class HubSpotAdapter implements CrmAdapter {
       name: d.properties?.dealname,
       stage: d.properties?.dealstage,
       amount: d.properties?.amount ? parseFloat(d.properties.amount) : undefined,
+      contactId: dealToContact.get(d.id),
     }));
   }
 

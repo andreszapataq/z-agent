@@ -178,7 +178,7 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
   }
 
   const notesContext =
-    `\n\n📝 REGLA DE NOTAS: cuando muevas un deal con un motivo concreto (p.ej. "pidió documentos técnicos", "objetó el precio", "pidió tiempo para decidir"), inmediatamente después del \`move_deal\` llama \`create_note\` con el \`deal_id\` del mismo deal y describe brevemente el motivo. Así el comercial ve el contexto en la timeline del deal sin tener que preguntar.`;
+    `\n\n📝 REGLA DE NOTAS: cuando muevas un deal con un motivo concreto (p.ej. "pidió documentos técnicos", "objetó el precio", "pidió tiempo para decidir"), inmediatamente después del \`move_deal\` llama \`create_note\` describiendo brevemente el motivo. Pasa SIEMPRE ambos identificadores cuando los tengas: \`deal_id\` (del deal que moviste) Y \`contact_id\` (del contacto asociado, que viene en search_deal/search_contact). Así el comercial ve la nota tanto en la timeline del deal como en la del contacto sin importar desde dónde llegue.`;
 
   const messages: ChatCompletionMessageParam[] = [
     {
