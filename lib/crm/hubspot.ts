@@ -229,15 +229,37 @@ export class HubSpotAdapter implements CrmAdapter {
     };
     if (input.amount !== undefined) properties.amount = String(input.amount);
 
+    // Asociar la empresa primaria del contacto al deal, para que cualquier
+    // actividad futura (tareas, notas) pueda propagarse a la timeline de la
+    // empresa sin tener que adivinar la asociación.
+    let companyId: string | null = null;
+    try {
+      const companyAssoc = await this.client.get(
+        `/crm/v3/objects/contacts/${input.contactId}/associations/companies`
+      );
+      companyId = companyAssoc.data?.results?.[0]?.id || null;
+    } catch {
+      // si falla, seguimos sin company association
+    }
+
+    const associations: Array<{ to: { id: string }; types: any[] }> = [
+      {
+        to: { id: input.contactId },
+        // 3 = deal-to-contact (HUBSPOT_DEFINED)
+        types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }],
+      },
+    ];
+    if (companyId) {
+      associations.push({
+        to: { id: companyId },
+        // 5 = deal-to-company (HUBSPOT_DEFINED)
+        types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 5 }],
+      });
+    }
+
     const res = await this.client.post("/crm/v3/objects/deals", {
       properties,
-      associations: [
-        {
-          to: { id: input.contactId },
-          // 3 = deal-to-contact (HUBSPOT_DEFINED)
-          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }],
-        },
-      ],
+      associations,
     });
 
     return {
@@ -246,6 +268,7 @@ export class HubSpotAdapter implements CrmAdapter {
       stage: input.stage || "saludo",
       amount: input.amount,
       contactId: input.contactId,
+      companyId: companyId || undefined,
     };
   }
 

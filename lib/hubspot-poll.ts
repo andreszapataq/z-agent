@@ -179,17 +179,39 @@ async function syncTenantEmails(tenant: Tenant): Promise<{ synced: number; deals
       dealName = subject
         ? `${customerLabel} — ${subject}`
         : `${customerLabel} — Propuesta`;
+
+      // Trae la empresa primaria del contacto para enlazar el deal a la company.
+      // Sin esto el deal queda solo asociado al contacto y luego las tareas no
+      // pueden propagarse a la timeline de la empresa.
+      let companyId: string | null = null;
+      try {
+        const companyAssoc = await client.get(
+          `/crm/v3/objects/contacts/${contactId}/associations/companies`
+        );
+        companyId = companyAssoc.data?.results?.[0]?.id || null;
+      } catch {
+        // si falla, seguimos sin company association
+      }
+
+      const dealAssociations: Array<{ to: { id: string }; types: any[] }> = [
+        {
+          to: { id: contactId },
+          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }],
+        },
+      ];
+      if (companyId) {
+        dealAssociations.push({
+          to: { id: companyId },
+          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 5 }],
+        });
+      }
+
       const created = await client.post("/crm/v3/objects/deals", {
         properties: {
           dealname: dealName,
           dealstage: targetStage,
         },
-        associations: [
-          {
-            to: { id: contactId },
-            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }],
-          },
-        ],
+        associations: dealAssociations,
       });
       dealId = created.data?.id;
       dealAction = "created";
