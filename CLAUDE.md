@@ -35,7 +35,7 @@ Runs up to 10 OpenAI iterations using `openai.chat.completions.create` with `too
 
 ### CRM adapter pattern (`lib/crm/`)
 
-`CrmAdapter` interface in `types.ts` defines 8 action methods: `searchContact`, `createContact`, `searchDeal`, `createDeal`, `moveDeal`, `createNote`, `createTask`, `listTasks` (plus `listStages` for pipeline labels). Two implementations exist:
+`CrmAdapter` interface in `types.ts` defines 9 action methods: `searchContact`, `createContact`, `searchDeal`, `createDeal`, `moveDeal`, `createNote`, `createTask`, `listTasks`, `completeTask` (plus `listStages` for pipeline labels). Two implementations exist:
 
 - **`HubSpotAdapter`** — calls HubSpot CRM v3 API with the tenant's `hubspot_token`. Stage names are resolved via per-tenant `tenant.stage_map` (Spanish → real HubSpot stageIds for that tenant's pipeline). Falls back to `DEFAULT_HUBSPOT_STAGE_MAP` (default HubSpot pipeline) if the tenant hasn't configured a map.
 - **`NativeAdapter`** — reads/writes directly to Supabase tables (`contacts`, `deals`, `notes`, `tasks`) scoped by `tenant_id`.

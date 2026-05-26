@@ -144,6 +144,19 @@ export class NativeAdapter implements CrmAdapter {
     return `Tarea "${input.title}" creada`;
   }
 
+  async completeTask(taskId: string): Promise<string> {
+    const { data, error } = await this.supabase
+      .from("tasks")
+      .update({ status: "completed", updated_at: new Date().toISOString() })
+      .eq("id", taskId)
+      .eq("tenant_id", this.tenantId)
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return "No encontré esa tarea";
+    return "Tarea marcada como completada";
+  }
+
   async listTasks(input: {
     fromDate: string;
     toDate: string;

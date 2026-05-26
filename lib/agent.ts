@@ -149,6 +149,21 @@ const TOOLS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "complete_task",
+      description:
+        "Marca una tarea existente como completada en el CRM. Úsalo cuando el usuario diga que ya hizo algo ('ya llamé a Juan', 'mandé la cotización', 'reunión hecha'). FLUJO OBLIGATORIO: primero llama `list_tasks` (rango razonable: hoy ± unos días) para encontrar la tarea que matchea. Si hay varias candidatas, pregunta al usuario cuál antes de marcar. Solo llama esto con el task_id exacto que devolvió list_tasks.",
+      parameters: {
+        type: "object",
+        properties: {
+          task_id: { type: "string", description: "ID de la tarea (campo `id` devuelto por list_tasks)" },
+        },
+        required: ["task_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_tasks",
       description:
         "Lista las tareas pendientes del comercial en un rango de fechas. Úsalo cuando el usuario pida 'mis tareas de hoy', 'tareas de mañana', 'tareas del viernes', 'qué tengo esta semana', etc. Resuelve las fechas relativas usando la FECHA ACTUAL del system prompt y pásalas en formato YYYY-MM-DD. Para un solo día, pasa el mismo valor en from_date y to_date.",
@@ -229,6 +244,14 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
   const tasksContext =
     `\n\n✅ REGLA DE TAREAS: cuando el usuario pida una tarea relacionada con un negocio/deal/propuesta/cuenta, SIEMPRE llama primero \`search_deal\` para obtener el \`deal_id\` y pásalo como \`deal_id\` en \`create_task\`. NO uses \`contact_id\` solo en este caso: pasar \`deal_id\` enlaza la tarea al deal + sus contactos + su empresa y la asigna al comercial dueño del deal automáticamente. Solo usa \`contact_id\` sin \`deal_id\` cuando la tarea sea explícitamente sobre una persona sin deal abierto (p.ej. "llamar a Juan el viernes" sin mencionar negocio).`;
 
+  const completeTaskContext =
+    `\n\n☑️ REGLA DE COMPLETAR TAREAS: cuando el usuario diga que ya hizo algo ("ya llamé", "mandé la cotización", "reunión hecha", "listo lo del cliente X"):
+1. Llama \`list_tasks\` con un rango razonable (de hoy hacia atrás 7 días, o un rango más amplio si el usuario dio una pista temporal) para localizar la tarea.
+2. Si encuentras UNA sola tarea que matchea claramente con lo que dijo el usuario, llama \`complete_task\` directo.
+3. Si hay varias candidatas, pregunta al usuario cuál antes de marcar. NO marques múltiples a la ciegas.
+4. Si no encuentras nada, dilo y ofrece registrar la actividad como nota (\`create_note\` con el contacto/deal correspondiente).
+5. Después de marcar una tarea como completada, SIEMPRE pregunta al usuario si quiere crear un seguimiento ("¿Te creo un seguimiento? ¿Para cuándo?"). Si la conversación da pistas claras (ej. "el cliente pidió revisar la propuesta en 3 días"), sugiere una fecha concreta. NO crees el seguimiento sin confirmación del usuario.`;
+
   const listTasksContext =
     `\n\n📋 REGLA DE LISTAR TAREAS: cuando el usuario pida ver sus tareas ("mis tareas de hoy", "qué tengo mañana", "tareas del viernes", "tareas de la semana"), usa \`list_tasks\` con from_date/to_date resueltos contra la FECHA ACTUAL. Rangos típicos:
 - "hoy" → from_date = to_date = fecha actual.
@@ -246,7 +269,8 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
         stagesContext +
         notesContext +
         tasksContext +
-        listTasksContext,
+        listTasksContext +
+        completeTaskContext,
     },
     { role: "user", content: userMessage },
   ];
@@ -320,6 +344,9 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
               dueDate: input.due_date,
               dueTime: input.due_time,
             });
+            break;
+          case "complete_task":
+            toolResult = await crm.completeTask(input.task_id);
             break;
           case "list_tasks":
             toolResult = JSON.stringify(

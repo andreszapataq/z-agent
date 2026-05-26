@@ -67,5 +67,6 @@ export interface CrmAdapter {
     toDate: string;
     includeCompleted?: boolean;
   }): Promise<TaskItem[]>;
+  completeTask(taskId: string): Promise<string>;
   listStages(): Promise<StageInfo[]>;
 }

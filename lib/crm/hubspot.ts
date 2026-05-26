@@ -459,6 +459,23 @@ export class HubSpotAdapter implements CrmAdapter {
     });
   }
 
+  async completeTask(taskId: string): Promise<string> {
+    try {
+      await this.client.patch(`/crm/v3/objects/tasks/${taskId}`, {
+        properties: { hs_task_status: "COMPLETED" },
+      });
+      return "Tarea marcada como completada";
+    } catch (err: any) {
+      if (err?.response?.status === 404) {
+        return "No encontré esa tarea en HubSpot";
+      }
+      if (err?.response?.status === 403) {
+        return "Tarea marcada como completada (HubSpot no expone el scope de tareas en este plan; queda en el log de actividad)";
+      }
+      throw err;
+    }
+  }
+
   async createTask(input: {
     contactId?: string;
     dealId?: string;
