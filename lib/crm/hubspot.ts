@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from "axios";
-import { CrmAdapter, Contact, Deal, DealStage, StageInfo } from "./types";
+import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem } from "./types";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
 // con su propio mapeo via `tenant.stage_map`.
@@ -318,6 +318,145 @@ export class HubSpotAdapter implements CrmAdapter {
       }
       throw err;
     }
+  }
+
+  async listTasks(input: {
+    fromDate: string;
+    toDate: string;
+    includeCompleted?: boolean;
+  }): Promise<TaskItem[]> {
+    // Anclamos el rango a horas locales Bogotá para que "tareas de hoy" cubra
+    // todo el día completo en zona del comercial, no la ventana UTC equivalente.
+    const fromTs = /^\d{4}-\d{2}-\d{2}$/.test(input.fromDate)
+      ? new Date(`${input.fromDate}T00:00:00-05:00`).getTime()
+      : new Date(input.fromDate).getTime();
+    const toTs = /^\d{4}-\d{2}-\d{2}$/.test(input.toDate)
+      ? new Date(`${input.toDate}T23:59:59-05:00`).getTime()
+      : new Date(input.toDate).getTime();
+
+    const filters: any[] = [
+      { propertyName: "hs_timestamp", operator: "GTE", value: String(fromTs) },
+      { propertyName: "hs_timestamp", operator: "LTE", value: String(toTs) },
+    ];
+    if (!input.includeCompleted) {
+      filters.push({ propertyName: "hs_task_status", operator: "NEQ", value: "COMPLETED" });
+    }
+    if (this.ownerId) {
+      filters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: this.ownerId });
+    }
+
+    const searchRes = await this.client.post("/crm/v3/objects/tasks/search", {
+      filterGroups: [{ filters }],
+      properties: ["hs_task_subject", "hs_timestamp", "hs_task_status", "hubspot_owner_id"],
+      sorts: [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
+      limit: 50,
+    });
+
+    const tasksRaw = (searchRes.data.results || []) as any[];
+    if (tasksRaw.length === 0) return [];
+
+    // Traer asociaciones (deal/contact/company) por tarea en paralelo. Cada
+    // batch read solo soporta un tipo de target, así que disparamos 3 batches.
+    const buildBatch = (objectType: string) =>
+      this.client
+        .post(`/crm/v3/associations/tasks/${objectType}/batch/read`, {
+          inputs: tasksRaw.map((t) => ({ id: t.id })),
+        })
+        .catch(() => null);
+
+    const [dealAssoc, contactAssoc, companyAssoc] = await Promise.all([
+      buildBatch("deals"),
+      buildBatch("contacts"),
+      buildBatch("companies"),
+    ]);
+
+    const firstIdByTask = (res: any): Map<string, string> => {
+      const map = new Map<string, string>();
+      for (const r of res?.data?.results || []) {
+        const taskId = r.from?.id;
+        const targetId = r.to?.[0]?.id;
+        if (taskId && targetId) map.set(taskId, targetId);
+      }
+      return map;
+    };
+
+    const taskToDeal = firstIdByTask(dealAssoc);
+    const taskToContact = firstIdByTask(contactAssoc);
+    const taskToCompany = firstIdByTask(companyAssoc);
+
+    // Resolver nombres en batch: una llamada por tipo con los IDs únicos.
+    const uniq = (m: Map<string, string>) => Array.from(new Set(m.values()));
+    const dealIds = uniq(taskToDeal);
+    const contactIds = uniq(taskToContact);
+    const companyIds = uniq(taskToCompany);
+
+    const dealNames = new Map<string, string>();
+    const contactNames = new Map<string, string>();
+    const companyNames = new Map<string, string>();
+
+    await Promise.all([
+      dealIds.length > 0
+        ? this.client
+            .post("/crm/v3/objects/deals/batch/read", {
+              properties: ["dealname"],
+              inputs: dealIds.map((id) => ({ id })),
+            })
+            .then((r) => {
+              for (const d of r.data?.results || []) dealNames.set(d.id, d.properties?.dealname);
+            })
+            .catch(() => undefined)
+        : Promise.resolve(),
+      contactIds.length > 0
+        ? this.client
+            .post("/crm/v3/objects/contacts/batch/read", {
+              properties: ["firstname", "lastname"],
+              inputs: contactIds.map((id) => ({ id })),
+            })
+            .then((r) => {
+              for (const c of r.data?.results || []) {
+                const name = `${c.properties?.firstname || ""} ${c.properties?.lastname || ""}`.trim();
+                contactNames.set(c.id, name || "(sin nombre)");
+              }
+            })
+            .catch(() => undefined)
+        : Promise.resolve(),
+      companyIds.length > 0
+        ? this.client
+            .post("/crm/v3/objects/companies/batch/read", {
+              properties: ["name"],
+              inputs: companyIds.map((id) => ({ id })),
+            })
+            .then((r) => {
+              for (const c of r.data?.results || []) companyNames.set(c.id, c.properties?.name);
+            })
+            .catch(() => undefined)
+        : Promise.resolve(),
+    ]);
+
+    return tasksRaw.map((t) => {
+      const ts = Number(t.properties?.hs_timestamp);
+      // Formateamos la fecha/hora en Bogotá para que el agente la presente al
+      // comercial en su zona horaria operativa.
+      const dueDate = new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+      const dueTime = new Date(ts).toLocaleTimeString("en-GB", {
+        timeZone: "America/Bogota",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const dealId = taskToDeal.get(t.id);
+      const contactId = taskToContact.get(t.id);
+      const companyId = taskToCompany.get(t.id);
+      return {
+        id: t.id,
+        title: t.properties?.hs_task_subject || "(sin título)",
+        dueDate,
+        dueTime,
+        status: t.properties?.hs_task_status || "NOT_STARTED",
+        dealName: dealId ? dealNames.get(dealId) : undefined,
+        contactName: contactId ? contactNames.get(contactId) : undefined,
+        companyName: companyId ? companyNames.get(companyId) : undefined,
+      };
+    });
   }
 
   async createTask(input: {

@@ -146,6 +146,32 @@ const TOOLS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "list_tasks",
+      description:
+        "Lista las tareas pendientes del comercial en un rango de fechas. Úsalo cuando el usuario pida 'mis tareas de hoy', 'tareas de mañana', 'tareas del viernes', 'qué tengo esta semana', etc. Resuelve las fechas relativas usando la FECHA ACTUAL del system prompt y pásalas en formato YYYY-MM-DD. Para un solo día, pasa el mismo valor en from_date y to_date.",
+      parameters: {
+        type: "object",
+        properties: {
+          from_date: {
+            type: "string",
+            description: "Inicio del rango (inclusive), formato YYYY-MM-DD, hora Bogotá.",
+          },
+          to_date: {
+            type: "string",
+            description: "Fin del rango (inclusive), formato YYYY-MM-DD, hora Bogotá. Para un solo día, igual a from_date.",
+          },
+          include_completed: {
+            type: "boolean",
+            description: "Si true, incluye también tareas ya completadas. Por defecto false (solo pendientes).",
+          },
+        },
+        required: ["from_date", "to_date"],
+      },
+    },
+  },
 ];
 
 async function logActivity(tenantId: string, action: string, details: any) {
@@ -203,6 +229,14 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
   const tasksContext =
     `\n\n✅ REGLA DE TAREAS: cuando el usuario pida una tarea relacionada con un negocio/deal/propuesta/cuenta, SIEMPRE llama primero \`search_deal\` para obtener el \`deal_id\` y pásalo como \`deal_id\` en \`create_task\`. NO uses \`contact_id\` solo en este caso: pasar \`deal_id\` enlaza la tarea al deal + sus contactos + su empresa y la asigna al comercial dueño del deal automáticamente. Solo usa \`contact_id\` sin \`deal_id\` cuando la tarea sea explícitamente sobre una persona sin deal abierto (p.ej. "llamar a Juan el viernes" sin mencionar negocio).`;
 
+  const listTasksContext =
+    `\n\n📋 REGLA DE LISTAR TAREAS: cuando el usuario pida ver sus tareas ("mis tareas de hoy", "qué tengo mañana", "tareas del viernes", "tareas de la semana"), usa \`list_tasks\` con from_date/to_date resueltos contra la FECHA ACTUAL. Rangos típicos:
+- "hoy" → from_date = to_date = fecha actual.
+- "mañana" → from_date = to_date = fecha actual + 1.
+- "esta semana" → from_date = fecha actual, to_date = el próximo domingo (inclusive).
+- "la próxima semana" → from_date = el próximo lunes, to_date = el domingo siguiente.
+Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el deal/contacto asociado. Si no hay tareas en el rango, dilo claramente.`;
+
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
@@ -211,7 +245,8 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
         dateContext +
         stagesContext +
         notesContext +
-        tasksContext,
+        tasksContext +
+        listTasksContext,
     },
     { role: "user", content: userMessage },
   ];
@@ -285,6 +320,15 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
               dueDate: input.due_date,
               dueTime: input.due_time,
             });
+            break;
+          case "list_tasks":
+            toolResult = JSON.stringify(
+              await crm.listTasks({
+                fromDate: input.from_date,
+                toDate: input.to_date,
+                includeCompleted: input.include_completed === true,
+              })
+            );
             break;
           default:
             toolResult = `Tool desconocido: ${name}`;

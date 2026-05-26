@@ -37,6 +37,17 @@ export type StageInfo = {
   displayOrder?: number;
 };
 
+export type TaskItem = {
+  id: string;
+  title: string;
+  dueDate: string;
+  dueTime?: string;
+  status: string;
+  dealName?: string;
+  contactName?: string;
+  companyName?: string;
+};
+
 export interface CrmAdapter {
   searchContact(query: string): Promise<Contact[]>;
   createContact(input: { name: string; company?: string; email?: string; phone?: string }): Promise<Contact>;
@@ -51,5 +62,10 @@ export interface CrmAdapter {
     dueDate: string;
     dueTime?: string;
   }): Promise<string>;
+  listTasks(input: {
+    fromDate: string;
+    toDate: string;
+    includeCompleted?: boolean;
+  }): Promise<TaskItem[]>;
   listStages(): Promise<StageInfo[]>;
 }

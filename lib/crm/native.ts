@@ -1,5 +1,5 @@
 import { createAdminClient } from "../supabase";
-import { CrmAdapter, Contact, Deal, DealStage, StageInfo } from "./types";
+import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem } from "./types";
 
 const NATIVE_STAGE_LABELS: Array<{ slug: DealStage; label: string }> = [
   { slug: "saludo", label: "Nuevo contacto" },
@@ -142,6 +142,37 @@ export class NativeAdapter implements CrmAdapter {
     });
     if (error) throw error;
     return `Tarea "${input.title}" creada`;
+  }
+
+  async listTasks(input: {
+    fromDate: string;
+    toDate: string;
+    includeCompleted?: boolean;
+  }): Promise<TaskItem[]> {
+    let query = this.supabase
+      .from("tasks")
+      .select("id, title, due_date, status, contact_id, contacts(full_name, company)")
+      .eq("tenant_id", this.tenantId)
+      .gte("due_date", input.fromDate)
+      .lte("due_date", input.toDate)
+      .order("due_date", { ascending: true })
+      .limit(50);
+
+    if (!input.includeCompleted) {
+      query = query.neq("status", "completed");
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    return (data || []).map((t: any) => ({
+      id: t.id,
+      title: t.title,
+      dueDate: t.due_date,
+      status: t.status,
+      contactName: t.contacts?.full_name,
+      companyName: t.contacts?.company,
+    }));
   }
 
   async listStages(): Promise<StageInfo[]> {
