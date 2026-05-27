@@ -63,6 +63,18 @@ When a HubSpot deal enters a configured "proposal sent" stage, the system sends 
 
 The Meta WhatsApp template **must be pre-approved** by Meta (24-48h human review). Each tenant approves their own template.
 
+### Daily task digest (proactive WhatsApp)
+
+When `tenant.daily_digest_enabled = true`, the system sends a daily WhatsApp **free-form** message to `tenant.owner_number` summarizing pending tasks.
+
+- **Trigger**: Vercel Cron hits `/api/cron/daily-tasks` once per day at 12:00 UTC (= 7am Bogotá).
+- **Polling logic**: `lib/daily-digest.ts` calls `crm.listTasks({ fromDate: today-30d, toDate: end_of_week_sunday, includeCompleted: false })` for each active tenant with the flag on. Buckets results into **overdue** (`due_date < today`), **today** (`= today`), and **rest of week** (`> today`, `≤ Sunday`). All date comparisons are anchored to America/Bogota.
+- **Dedup**: queries `activity_log` for `action = 'daily_digest_sent'` matching `details->>date = today` — if found, skip. Vercel Cron may retry on failure; this prevents double sends within the same day.
+- **No-op when empty**: if there are no pending tasks in any bucket, logs `daily_digest_skipped` and sends nothing.
+- **Free-form, not template**: uses `sendWhatsAppMessage()` (text). Requires the 24h WhatsApp customer-service window to be open on the owner's number. If Meta returns out-of-window error, logs `daily_digest_failed` and continues — no fallback template is configured.
+- **Auth**: cron endpoint requires `Authorization: Bearer <CRON_SECRET>` (same secret as `/api/cron/check-deals`).
+- **Required tenant config**: `daily_digest_enabled = true`, `whatsapp_phone_id`, `whatsapp_token`, `owner_number`. Tenants without the flag (or missing credentials) are filtered out at the query level.
+
 ### Rate limiting (`lib/ratelimit.ts`)
 
 Uses `@upstash/ratelimit` + `@upstash/redis`. Two limiters:

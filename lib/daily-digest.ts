@@ -1,0 +1,201 @@
+import { createAdminClient } from "./supabase";
+import { sendWhatsAppMessage } from "./whatsapp";
+import { Tenant } from "./tenants";
+import { getCrmAdapter } from "./crm";
+import { TaskItem } from "./crm/types";
+
+type DigestResult = {
+  scanned: number;
+  sent: number;
+  skipped: number;
+  errors: string[];
+};
+
+// Resumen diario de tareas pendientes por WhatsApp libre al owner_number.
+// Cubre vencidas + hoy + esta semana, todo en zona Bogotá.
+export async function pollDailyDigests(): Promise<DigestResult> {
+  const result: DigestResult = { scanned: 0, sent: 0, skipped: 0, errors: [] };
+  const supabase = createAdminClient();
+
+  const { data: tenants, error } = await supabase
+    .from("tenants")
+    .select("*")
+    .eq("status", "active")
+    .eq("daily_digest_enabled", true)
+    .not("whatsapp_phone_id", "is", null)
+    .not("whatsapp_token", "is", null)
+    .not("owner_number", "is", null);
+
+  if (error) {
+    result.errors.push(`supabase: ${error.message}`);
+    return result;
+  }
+  if (!tenants) return result;
+
+  result.scanned = tenants.length;
+
+  for (const tenant of tenants as Tenant[]) {
+    try {
+      const status = await sendTenantDigest(tenant);
+      if (status === "sent") result.sent++;
+      else result.skipped++;
+    } catch (e: any) {
+      const detail = e?.response?.data
+        ? JSON.stringify(e.response.data)
+        : e?.message || String(e);
+      console.error(`[daily-digest] tenant=${tenant.id}`, detail);
+      result.errors.push(`${tenant.id}: ${detail}`);
+    }
+  }
+  return result;
+}
+
+async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
+  const supabase = createAdminClient();
+
+  // Anclamos las fechas a Bogotá. "Hoy" en zona del comercial, no UTC.
+  const today = todayInBogota();
+  const endOfWeek = endOfWeekFrom(today);
+  const lookback = daysBefore(today, 30);
+
+  // Dedup: si ya mandamos el digest hoy para este tenant, no repetir aunque
+  // el cron se haya re-ejecutado (Vercel cron puede reintentar en algunos casos).
+  const { data: prior } = await supabase
+    .from("activity_log")
+    .select("id")
+    .eq("tenant_id", tenant.id)
+    .eq("action", "daily_digest_sent")
+    .filter("details->>date", "eq", today)
+    .limit(1);
+
+  if (prior && prior.length > 0) return "skipped";
+
+  const crm = getCrmAdapter(tenant);
+  const tasks = await crm.listTasks({
+    fromDate: lookback,
+    toDate: endOfWeek,
+    includeCompleted: false,
+  });
+
+  const overdue: TaskItem[] = [];
+  const todayTasks: TaskItem[] = [];
+  const thisWeek: TaskItem[] = [];
+  for (const t of tasks) {
+    if (t.dueDate < today) overdue.push(t);
+    else if (t.dueDate === today) todayTasks.push(t);
+    else if (t.dueDate <= endOfWeek) thisWeek.push(t);
+  }
+
+  // Si no hay nada que reportar, no molestamos al comercial.
+  if (overdue.length === 0 && todayTasks.length === 0 && thisWeek.length === 0) {
+    await supabase.from("activity_log").insert({
+      tenant_id: tenant.id,
+      action: "daily_digest_skipped",
+      details: { date: today, reason: "no_pending_tasks" },
+    });
+    return "skipped";
+  }
+
+  const body = formatDigest({ overdue, today: todayTasks, thisWeek, todayStr: today });
+
+  let waOk = false;
+  let waError: string | undefined;
+  try {
+    await sendWhatsAppMessage(
+      tenant.whatsapp_phone_id!,
+      tenant.whatsapp_token!,
+      tenant.owner_number!,
+      body
+    );
+    waOk = true;
+  } catch (waErr: any) {
+    waError = waErr?.response?.data
+      ? JSON.stringify(waErr.response.data)
+      : waErr?.message || String(waErr);
+    console.warn(`[daily-digest] WhatsApp falló (probable ventana cerrada): ${waError}`);
+  }
+
+  await supabase.from("activity_log").insert({
+    tenant_id: tenant.id,
+    action: waOk ? "daily_digest_sent" : "daily_digest_failed",
+    details: {
+      date: today,
+      overdue_count: overdue.length,
+      today_count: todayTasks.length,
+      week_count: thisWeek.length,
+      whatsapp_error: waError || null,
+    },
+  });
+
+  return waOk ? "sent" : "skipped";
+}
+
+function formatDigest(input: {
+  overdue: TaskItem[];
+  today: TaskItem[];
+  thisWeek: TaskItem[];
+  todayStr: string;
+}): string {
+  const lines: string[] = [];
+  lines.push(`☀️ *Tu día arranca con ${totalCount(input)} tareas pendientes*`);
+  lines.push("");
+
+  if (input.overdue.length > 0) {
+    lines.push(`⚠️ *Vencidas (${input.overdue.length})*`);
+    for (const t of input.overdue) lines.push(formatLine(t, { showDate: true }));
+    lines.push("");
+  }
+
+  if (input.today.length > 0) {
+    lines.push(`📌 *Hoy (${input.today.length})*`);
+    for (const t of input.today) lines.push(formatLine(t, { showDate: false }));
+    lines.push("");
+  }
+
+  if (input.thisWeek.length > 0) {
+    lines.push(`📅 *Resto de la semana (${input.thisWeek.length})*`);
+    for (const t of input.thisWeek) lines.push(formatLine(t, { showDate: true }));
+    lines.push("");
+  }
+
+  lines.push("Cuando completes alguna, dime aquí ('ya llamé a Juan', 'mandé la cotización a X') y la marco en el CRM.");
+
+  return lines.join("\n").trim();
+}
+
+function formatLine(t: TaskItem, opts: { showDate: boolean }): string {
+  const parts: string[] = [`• ${t.title}`];
+  if (opts.showDate) {
+    parts.push(`— ${t.dueDate}${t.dueTime ? ` ${t.dueTime}` : ""}`);
+  } else if (t.dueTime) {
+    parts.push(`— ${t.dueTime}`);
+  }
+  const ctx = t.dealName || t.companyName || t.contactName;
+  if (ctx) parts.push(`(${ctx})`);
+  return parts.join(" ");
+}
+
+function totalCount(input: { overdue: TaskItem[]; today: TaskItem[]; thisWeek: TaskItem[] }): number {
+  return input.overdue.length + input.today.length + input.thisWeek.length;
+}
+
+function todayInBogota(): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+}
+
+function daysBefore(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00-05:00`);
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+}
+
+// Fin de "esta semana" = domingo (inclusive). Si hoy es domingo, devolvemos hoy.
+// Anclamos `date` a 00:00 Bogotá (-05:00) y caminamos hasta el domingo.
+function endOfWeekFrom(date: string): string {
+  const d = new Date(`${date}T00:00:00-05:00`);
+  // Sobre la fecha anclada a 00:00 -05:00, getUTCDay coincide con el día Bogotá
+  // (00:00 -05:00 == 05:00 UTC, mismo calendario en ambas zonas).
+  const daysUntilSunday = (7 - d.getUTCDay()) % 7;
+  d.setUTCDate(d.getUTCDate() + daysUntilSunday);
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
+}

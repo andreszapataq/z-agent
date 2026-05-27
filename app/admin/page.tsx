@@ -20,6 +20,7 @@ type Tenant = {
   proposal_stage_id: string | null;
   proposal_email_template_id: string | null;
   stage_map: Record<string, string> | null;
+  daily_digest_enabled: boolean;
   created_at: string;
 };
 
@@ -53,6 +54,7 @@ export default function AdminPage() {
     proposal_stage_id: "",
     proposal_email_template_id: "",
     stage_map: {} as Record<string, string>,
+    daily_digest_enabled: false,
   });
 
   const [pipelines, setPipelines] = useState<PipelineOption[] | null>(null);
@@ -119,6 +121,7 @@ export default function AdminPage() {
         proposal_stage_id: tenant.proposal_stage_id || "",
         proposal_email_template_id: tenant.proposal_email_template_id || "",
         stage_map: tenant.stage_map || {},
+        daily_digest_enabled: !!tenant.daily_digest_enabled,
       });
     } else {
       setEditing(null);
@@ -135,6 +138,7 @@ export default function AdminPage() {
         proposal_stage_id: "",
         proposal_email_template_id: "",
         stage_map: {},
+        daily_digest_enabled: false,
       });
     }
     setModalOpen(true);
@@ -545,6 +549,25 @@ export default function AdminPage() {
                 value={form.whatsapp_token}
                 onChange={(e) => setForm({ ...form, whatsapp_token: e.target.value })}
               />
+            </div>
+
+            <div className={styles.formGroup}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={form.daily_digest_enabled}
+                  onChange={(e) => setForm({ ...form, daily_digest_enabled: e.target.checked })}
+                />
+                <span className={styles.formLabel} style={{ margin: 0 }}>
+                  Resumen diario de tareas por WhatsApp
+                </span>
+              </label>
+              <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 0 24px" }}>
+                Cada mañana (12:00 UTC = 7am Bogotá) el agente le envía al owner_number un
+                resumen de tareas vencidas, de hoy y del resto de la semana. Requiere que
+                la ventana de WhatsApp esté abierta (el owner debe haber escrito al agente
+                en las últimas 24h).
+              </p>
             </div>
 
             {form.crm_type === "hubspot" && (

@@ -24,6 +24,10 @@ export type Tenant = {
   // Mapeo etapa-en-español → stageId real del pipeline custom de cada tenant
   stage_map: Record<string, string> | null;
 
+  // Cuando está activo, el cron diario manda al owner_number un resumen de
+  // tareas vencidas + hoy + esta semana.
+  daily_digest_enabled: boolean;
+
   created_at: string;
   updated_at: string;
 };

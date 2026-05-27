@@ -29,6 +29,9 @@ export const tenantCreateSchema = z.object({
 
   // Mapeo de stages en español → stageId real del pipeline del tenant
   stage_map: z.record(z.string()).nullable().optional(),
+
+  // Resumen diario de tareas pendientes via WhatsApp libre
+  daily_digest_enabled: z.boolean().optional(),
 });
 
 export const tenantUpdateSchema = tenantCreateSchema.partial().extend({
