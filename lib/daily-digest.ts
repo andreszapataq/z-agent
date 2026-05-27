@@ -55,7 +55,10 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
 
   // Anclamos las fechas a Bogotá. "Hoy" en zona del comercial, no UTC.
   const today = todayInBogota();
-  const endOfWeek = endOfWeekFrom(today);
+  // Ventana rodante: muestra lo de hoy + los próximos 7 días, sin importar
+  // qué día de la semana sea. Es más predecible que "hasta el domingo" (que se
+  // achicaba a 1-2 días el viernes y dejaba huecos al lunes siguiente).
+  const horizon = daysAfter(today, 7);
   const lookback = daysBefore(today, 30);
 
   // Dedup: si ya mandamos el digest hoy para este tenant, no repetir aunque
@@ -73,21 +76,21 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
   const crm = getCrmAdapter(tenant);
   const tasks = await crm.listTasks({
     fromDate: lookback,
-    toDate: endOfWeek,
+    toDate: horizon,
     includeCompleted: false,
   });
 
   const overdue: TaskItem[] = [];
   const todayTasks: TaskItem[] = [];
-  const thisWeek: TaskItem[] = [];
+  const upcoming: TaskItem[] = [];
   for (const t of tasks) {
     if (t.dueDate < today) overdue.push(t);
     else if (t.dueDate === today) todayTasks.push(t);
-    else if (t.dueDate <= endOfWeek) thisWeek.push(t);
+    else if (t.dueDate <= horizon) upcoming.push(t);
   }
 
   // Si no hay nada que reportar, no molestamos al comercial.
-  if (overdue.length === 0 && todayTasks.length === 0 && thisWeek.length === 0) {
+  if (overdue.length === 0 && todayTasks.length === 0 && upcoming.length === 0) {
     await supabase.from("activity_log").insert({
       tenant_id: tenant.id,
       action: "daily_digest_skipped",
@@ -96,7 +99,7 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
     return "skipped";
   }
 
-  const body = formatDigest({ overdue, today: todayTasks, thisWeek, todayStr: today });
+  const body = formatDigest({ overdue, today: todayTasks, upcoming, todayStr: today });
 
   let waOk = false;
   let waError: string | undefined;
@@ -122,7 +125,7 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
       date: today,
       overdue_count: overdue.length,
       today_count: todayTasks.length,
-      week_count: thisWeek.length,
+      upcoming_count: upcoming.length,
       whatsapp_error: waError || null,
     },
   });
@@ -132,15 +135,15 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
 
 // WhatsApp limita texto a 4096 chars. Truncamos por bucket y por título para
 // que un día con 60+ tareas no nos haga rechazar el mensaje. La sección "Hoy"
-// es la más importante → más slots; "Vencidas" y "Resto de la semana" muestran
+// es la más importante → más slots; "Vencidas" y "Próximos días" muestran
 // los primeros N ordenados y dejan un "y X más" al final.
-const MAX_PER_BUCKET = { overdue: 12, today: 20, thisWeek: 12 };
+const MAX_PER_BUCKET = { overdue: 12, today: 20, upcoming: 12 };
 const MAX_TITLE_CHARS = 90;
 
 function formatDigest(input: {
   overdue: TaskItem[];
   today: TaskItem[];
-  thisWeek: TaskItem[];
+  upcoming: TaskItem[];
   todayStr: string;
 }): string {
   const lines: string[] = [];
@@ -149,7 +152,7 @@ function formatDigest(input: {
 
   appendBucket(lines, "⚠️ *Vencidas*", input.overdue, MAX_PER_BUCKET.overdue, { showDate: true });
   appendBucket(lines, "📌 *Hoy*", input.today, MAX_PER_BUCKET.today, { showDate: false });
-  appendBucket(lines, "📅 *Resto de la semana*", input.thisWeek, MAX_PER_BUCKET.thisWeek, { showDate: true });
+  appendBucket(lines, "📅 *Próximos días*", input.upcoming, MAX_PER_BUCKET.upcoming, { showDate: true });
 
   lines.push("Cuando completes alguna, dime aquí ('ya llamé a Juan', 'mandé la cotización a X') y la marco en el CRM.");
 
@@ -187,8 +190,8 @@ function formatLine(t: TaskItem, opts: { showDate: boolean }): string {
   return parts.join(" ");
 }
 
-function totalCount(input: { overdue: TaskItem[]; today: TaskItem[]; thisWeek: TaskItem[] }): number {
-  return input.overdue.length + input.today.length + input.thisWeek.length;
+function totalCount(input: { overdue: TaskItem[]; today: TaskItem[]; upcoming: TaskItem[] }): number {
+  return input.overdue.length + input.today.length + input.upcoming.length;
 }
 
 function todayInBogota(): string {
@@ -201,13 +204,8 @@ function daysBefore(date: string, days: number): string {
   return d.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
 }
 
-// Fin de "esta semana" = domingo (inclusive). Si hoy es domingo, devolvemos hoy.
-// Anclamos `date` a 00:00 Bogotá (-05:00) y caminamos hasta el domingo.
-function endOfWeekFrom(date: string): string {
+function daysAfter(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00-05:00`);
-  // Sobre la fecha anclada a 00:00 -05:00, getUTCDay coincide con el día Bogotá
-  // (00:00 -05:00 == 05:00 UTC, mismo calendario en ambas zonas).
-  const daysUntilSunday = (7 - d.getUTCDay()) % 7;
-  d.setUTCDate(d.getUTCDate() + daysUntilSunday);
+  d.setUTCDate(d.getUTCDate() + days);
   return d.toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
 }
