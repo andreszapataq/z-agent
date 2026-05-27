@@ -434,7 +434,12 @@ export class HubSpotAdapter implements CrmAdapter {
     ]);
 
     return tasksRaw.map((t) => {
-      const ts = Number(t.properties?.hs_timestamp);
+      // HubSpot devuelve hs_timestamp como ISO string ("2026-05-08T00:00:00Z")
+      // en endpoints nuevos, pero como ms numérico en otros. Manejamos ambos.
+      const raw = t.properties?.hs_timestamp;
+      const ts = raw != null && /^\d+$/.test(String(raw))
+        ? Number(raw)
+        : new Date(raw as any).getTime();
       // Formateamos la fecha/hora en Bogotá para que el agente la presente al
       // comercial en su zona horaria operativa.
       const dueDate = new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/Bogota" });

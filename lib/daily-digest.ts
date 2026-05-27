@@ -130,6 +130,13 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
   return waOk ? "sent" : "skipped";
 }
 
+// WhatsApp limita texto a 4096 chars. Truncamos por bucket y por título para
+// que un día con 60+ tareas no nos haga rechazar el mensaje. La sección "Hoy"
+// es la más importante → más slots; "Vencidas" y "Resto de la semana" muestran
+// los primeros N ordenados y dejan un "y X más" al final.
+const MAX_PER_BUCKET = { overdue: 12, today: 20, thisWeek: 12 };
+const MAX_TITLE_CHARS = 90;
+
 function formatDigest(input: {
   overdue: TaskItem[];
   today: TaskItem[];
@@ -140,31 +147,36 @@ function formatDigest(input: {
   lines.push(`☀️ *Tu día arranca con ${totalCount(input)} tareas pendientes*`);
   lines.push("");
 
-  if (input.overdue.length > 0) {
-    lines.push(`⚠️ *Vencidas (${input.overdue.length})*`);
-    for (const t of input.overdue) lines.push(formatLine(t, { showDate: true }));
-    lines.push("");
-  }
-
-  if (input.today.length > 0) {
-    lines.push(`📌 *Hoy (${input.today.length})*`);
-    for (const t of input.today) lines.push(formatLine(t, { showDate: false }));
-    lines.push("");
-  }
-
-  if (input.thisWeek.length > 0) {
-    lines.push(`📅 *Resto de la semana (${input.thisWeek.length})*`);
-    for (const t of input.thisWeek) lines.push(formatLine(t, { showDate: true }));
-    lines.push("");
-  }
+  appendBucket(lines, "⚠️ *Vencidas*", input.overdue, MAX_PER_BUCKET.overdue, { showDate: true });
+  appendBucket(lines, "📌 *Hoy*", input.today, MAX_PER_BUCKET.today, { showDate: false });
+  appendBucket(lines, "📅 *Resto de la semana*", input.thisWeek, MAX_PER_BUCKET.thisWeek, { showDate: true });
 
   lines.push("Cuando completes alguna, dime aquí ('ya llamé a Juan', 'mandé la cotización a X') y la marco en el CRM.");
 
   return lines.join("\n").trim();
 }
 
+function appendBucket(
+  lines: string[],
+  header: string,
+  tasks: TaskItem[],
+  max: number,
+  opts: { showDate: boolean }
+) {
+  if (tasks.length === 0) return;
+  lines.push(`${header} (${tasks.length})`);
+  const visible = tasks.slice(0, max);
+  for (const t of visible) lines.push(formatLine(t, opts));
+  const hidden = tasks.length - visible.length;
+  if (hidden > 0) lines.push(`…y ${hidden} más (revísalas en HubSpot)`);
+  lines.push("");
+}
+
 function formatLine(t: TaskItem, opts: { showDate: boolean }): string {
-  const parts: string[] = [`• ${t.title}`];
+  const title = t.title.length > MAX_TITLE_CHARS
+    ? `${t.title.slice(0, MAX_TITLE_CHARS - 1)}…`
+    : t.title;
+  const parts: string[] = [`• ${title}`];
   if (opts.showDate) {
     parts.push(`— ${t.dueDate}${t.dueTime ? ` ${t.dueTime}` : ""}`);
   } else if (t.dueTime) {
