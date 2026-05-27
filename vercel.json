@@ -2,11 +2,11 @@
   "crons": [
     {
       "path": "/api/cron/check-deals",
-      "schedule": "0 14 * * *"
+      "schedule": "0 12 * * *"
     },
     {
       "path": "/api/cron/daily-tasks",
-      "schedule": "0 12 * * *"
+      "schedule": "0 13 * * *"
     }
   ]
 }

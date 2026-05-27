@@ -563,7 +563,7 @@ export default function AdminPage() {
                 </span>
               </label>
               <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 0 24px" }}>
-                Cada mañana (12:00 UTC = 7am Bogotá) el agente le envía al owner_number un
+                Cada mañana (13:00 UTC = 8am Bogotá) el agente le envía al owner_number un
                 resumen de tareas vencidas, de hoy y del resto de la semana. Requiere que
                 la ventana de WhatsApp esté abierta (el owner debe haber escrito al agente
                 en las últimas 24h).
@@ -656,9 +656,10 @@ export default function AdminPage() {
                     Sync de propuestas · cron diario
                   </div>
                   <p style={{ fontSize: 12, color: "var(--text3)", margin: "0 0 12px" }}>
-                    El cron de las 14:00 UTC detecta correos enviados con el template configurado
-                    y mueve/crea el deal en la etapa de propuesta. Luego el comercial recibe un
-                    recordatorio (tarea HubSpot + WhatsApp libre) — sin costos de Meta.
+                    El cron de las 12:00 UTC (7am Bogotá) detecta correos enviados con el template
+                    configurado, mueve/crea el deal en la etapa de propuesta y crea una tarea en
+                    HubSpot vencimiento hoy 9am. Una hora después, el digest diario (8am Bogotá)
+                    incluye esa tarea en el resumen al comercial — sin costos de Meta.
                   </p>
                 </div>
 

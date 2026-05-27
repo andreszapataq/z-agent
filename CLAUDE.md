@@ -50,24 +50,22 @@ Tenants live in the `tenants` Supabase table (text primary key, e.g. `"qna-medic
 
 Single shared secret stored in `ADMIN_SECRET`. The login page POSTs to `/api/admin/auth`; on success the server sets an **HttpOnly, SameSite=Lax, Secure (in prod) cookie** named `z-admin-session` containing a SHA-256 hash of the secret (12h TTL). All admin endpoints check the cookie via `isAuthenticated()` in `lib/admin-auth.ts` (uses `crypto.timingSafeEqual`). Logout posts to `/api/admin/logout` which clears the cookie. No JWT, no DB sessions.
 
-### Proposal notification (proactive WhatsApp)
+### Proposal follow-up (HubSpot task only)
 
-When a HubSpot deal enters a configured "proposal sent" stage, the system sends a pre-approved WhatsApp template message to the deal's contact phone — without manual intervention by the commercial.
+When a HubSpot deal enters the configured proposal stage (or when `pollProposalEmails` syncs an email sent with the proposal template), the cron creates a follow-up **HubSpot task** for the commercial. **No WhatsApp message is sent per deal** — that role is covered by the consolidated [daily digest](#daily-task-digest-proactive-whatsapp). Sending one push per proposal proved noisy (50+ per day) and unreliable (24h WhatsApp service window often closed over weekends; Meta's Cloud API accepts the request with 2xx then silently fails delivery via a status webhook).
 
-- **Trigger**: Vercel Cron hits `/api/cron/check-deals` once per day at 14:00 UTC (Hobby plan limit; pipeline business rule is "notify the day after the proposal", so daily fits the requirement).
-- **Polling logic**: `lib/hubspot-poll.ts` queries each active HubSpot tenant's deals via `POST /crm/v3/objects/deals/search` filtered by `dealstage = tenant.proposal_stage_id` AND `hs_date_entered_<stageId> >= last_polled_at`.
-- **Dedup**: before sending, queries `activity_log` for `action = 'proposal_notified'` matching the `deal_id` — if found, skip.
-- **Template**: `sendWhatsAppTemplate()` in `lib/whatsapp.ts` calls Meta's template API with `tenant.proposal_template_name` and `proposal_template_lang`. Variables passed: `{{1}}` = contact firstname, `{{2}}` = deal name.
-- **Auth**: cron endpoint requires `Authorization: Bearer <CRON_SECRET>`. Vercel Cron sends this automatically when `CRON_SECRET` env var is set.
-- **Required tenant config**: `proposal_stage_id`, `proposal_template_name`, plus the standard HubSpot/WhatsApp credentials. If any are missing, the tenant is skipped silently.
-
-The Meta WhatsApp template **must be pre-approved** by Meta (24-48h human review). Each tenant approves their own template.
+- **Trigger**: `/api/cron/check-deals` runs at 12:00 UTC daily (= 7am Bogotá). It runs **before** the daily digest (8am Bogotá) so the newly-created tasks are visible in the same morning's digest. Two stages inside: `pollProposalEmails` → `pollProposalNotifications` (in `lib/hubspot-poll.ts`).
+- **Task shape**: title `Enviar WhatsApp de seguimiento a {firstname} de {company} ({phone}) — {deal label}`. Due **today 09:00 Bogotá** — i.e. ~2 hours after the cron run. Since the cron only picks up emails sent _before_ today's 7am scan, "today" from the cron's perspective is "next day" from the email's perspective (≥16h of review time for the client in the typical 9am–6pm proposal-send window).
+- **Reminder**: `hs_task_reminders` is set as a JSON-stringified array (`[dueTs]`). HubSpot ignores the bare-string form for some portals; the array form reliably populates the "Recordatorio" field and fires the notification at the due time.
+- **Owner**: prefers the deal's `hubspot_owner_id`, falls back to `tenant.hubspot_owner_id`. If neither is set we log a warning — without owner, HubSpot won't fire the reminder.
+- **Dedup**: `activity_log.action = 'proposal_followup_queued'` keyed on `details->>deal_id`.
+- **Auth**: `Authorization: Bearer <CRON_SECRET>` (Vercel Cron sends this when `CRON_SECRET` is set).
 
 ### Daily task digest (proactive WhatsApp)
 
 When `tenant.daily_digest_enabled = true`, the system sends a daily WhatsApp **free-form** message to `tenant.owner_number` summarizing pending tasks.
 
-- **Trigger**: Vercel Cron hits `/api/cron/daily-tasks` once per day at 12:00 UTC (= 7am Bogotá).
+- **Trigger**: Vercel Cron hits `/api/cron/daily-tasks` once per day at 13:00 UTC (= 8am Bogotá).
 - **Polling logic**: `lib/daily-digest.ts` calls `crm.listTasks({ fromDate: today-30d, toDate: end_of_week_sunday, includeCompleted: false })` for each active tenant with the flag on. Buckets results into **overdue** (`due_date < today`), **today** (`= today`), and **rest of week** (`> today`, `≤ Sunday`). All date comparisons are anchored to America/Bogota.
 - **Dedup**: queries `activity_log` for `action = 'daily_digest_sent'` matching `details->>date = today` — if found, skip. Vercel Cron may retry on failure; this prevents double sends within the same day.
 - **No-op when empty**: if there are no pending tasks in any bucket, logs `daily_digest_skipped` and sends nothing.

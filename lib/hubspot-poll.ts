@@ -1,6 +1,5 @@
 import axios from "axios";
 import { createAdminClient } from "./supabase";
-import { sendWhatsAppMessage } from "./whatsapp";
 import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
 
@@ -360,60 +359,60 @@ async function pollTenant(tenant: Tenant, extraDeals: TouchedDeal[] = []): Promi
     }
 
     const contactRes = await client.get(
-      `/crm/v3/objects/contacts/${contactId}?properties=firstname,lastname,phone`
+      `/crm/v3/objects/contacts/${contactId}?properties=firstname,lastname,phone,company`
     );
     const props = contactRes.data?.properties || {};
     const firstName = (props.firstname || "").trim() || "el cliente";
-    const lastName = (props.lastname || "").trim();
-    const fullName = [firstName, lastName].filter(Boolean).join(" ");
     const phoneRaw = (props.phone || "").trim();
 
-    // Crear tarea en HubSpot (due hoy en Bogotá)
+    // Empresa: preferimos el record asociado (más confiable que la propiedad
+    // free-text `company` del contacto, que se desactualiza).
+    let companyName = "";
+    try {
+      const companyAssoc = await client.get(
+        `/crm/v3/objects/contacts/${contactId}/associations/companies`
+      );
+      const companyId = companyAssoc.data?.results?.[0]?.id;
+      if (companyId) {
+        const companyRes = await client.get(
+          `/crm/v3/objects/companies/${companyId}?properties=name`
+        );
+        companyName = (companyRes.data?.properties?.name || "").trim();
+      }
+    } catch {
+      // si falla, caemos a la propiedad free-text del contacto
+    }
+    if (!companyName) companyName = (props.company || "").trim();
+
+    // El cron corre a las 7am Bogotá del día siguiente al envío del correo,
+    // así que "hoy" desde la perspectiva del cron == "día siguiente" desde la
+    // perspectiva del cliente. La tarea queda due las 9am de hoy → el comercial
+    // tiene 2 horas para prepararse y el digest de las 8am ya la verá en "Hoy".
     const todayBogota = new Date().toLocaleDateString("en-CA", {
       timeZone: "America/Bogota",
     });
-    const taskTitle = `Seguimiento propuesta — ${dealName}`;
+    const dealLabel = dealName.split(" — ").slice(-1)[0] || dealName;
+    const contactRef = companyName ? `${firstName} de ${companyName}` : firstName;
+    const taskTitle = phoneRaw
+      ? `Enviar WhatsApp de seguimiento a ${contactRef} (${phoneRaw}) — ${dealLabel}`
+      : `Enviar WhatsApp de seguimiento a ${contactRef} (sin teléfono) — ${dealLabel}`;
 
     let taskOk = false;
+    let taskError: string | undefined;
     try {
-      await crm.createTask({ contactId, dealId, title: taskTitle, dueDate: todayBogota });
+      await crm.createTask({
+        contactId,
+        dealId,
+        title: taskTitle,
+        dueDate: todayBogota,
+        dueTime: "09:00",
+      });
       taskOk = true;
     } catch (taskErr: any) {
-      console.error(`[poll] createTask falló para deal ${dealId}:`, taskErr?.message);
-    }
-
-    // WhatsApp libre al comercial (depende de service window abierta)
-    const phoneLine = phoneRaw
-      ? `📞 Teléfono del contacto: ${phoneRaw}`
-      : `⚠️ El contacto no tiene teléfono registrado en HubSpot — revísalo allí.`;
-
-    const body =
-      `🔔 *Recordatorio: seguimiento de propuesta*\n\n` +
-      `Entró a propuesta el deal *"${dealName}"* con ${fullName}.\n` +
-      `${phoneLine}\n\n` +
-      `Sugerencia para enviarle hoy desde tu WhatsApp personal:\n\n` +
-      `──\n` +
-      `Hola ${firstName}, te confirmo que ${tenant.name} te envió la propuesta para "${dealName}". ¿Pudiste revisarla? Quedamos atentos a cualquier inquietud.\n` +
-      `──\n\n` +
-      (taskOk
-        ? `✅ Te dejé también una tarea en HubSpot para no perderle el rastro.`
-        : `(No pude crear la tarea en HubSpot, revísalo manualmente.)`);
-
-    let waOk = false;
-    let waError: string | undefined;
-    try {
-      await sendWhatsAppMessage(
-        tenant.whatsapp_phone_id!,
-        tenant.whatsapp_token!,
-        tenant.owner_number!,
-        body
-      );
-      waOk = true;
-    } catch (waErr: any) {
-      waError = waErr?.response?.data
-        ? JSON.stringify(waErr.response.data)
-        : waErr?.message || String(waErr);
-      console.warn(`[poll] WhatsApp al comercial falló (probable ventana cerrada): ${waError}`);
+      taskError = taskErr?.response?.data
+        ? JSON.stringify(taskErr.response.data)
+        : taskErr?.message || String(taskErr);
+      console.error(`[poll] createTask falló para deal ${dealId}:`, taskError);
     }
 
     await supabase.from("activity_log").insert({
@@ -424,9 +423,9 @@ async function pollTenant(tenant: Tenant, extraDeals: TouchedDeal[] = []): Promi
         deal_name: dealName,
         contact_id: contactId,
         contact_phone: phoneRaw || null,
+        task_due_date: todayBogota,
         task_created: taskOk,
-        whatsapp_sent: waOk,
-        whatsapp_error: waError || null,
+        task_error: taskError || null,
       },
     });
     queued++;

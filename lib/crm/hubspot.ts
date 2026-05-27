@@ -537,14 +537,27 @@ export class HubSpotAdapter implements CrmAdapter {
     }
 
     const ownerId = dealOwnerId || this.ownerId;
+    if (!ownerId) {
+      console.warn(
+        `[hubspot] createTask sin owner — el tenant no tiene hubspot_owner_id ` +
+          `y el deal ${dealId || "(ninguno)"} tampoco. HubSpot no disparará recordatorio.`
+      );
+    }
+
+    // hs_task_reminders requiere una lista JSON de timestamps en ms; el string
+    // crudo "1234..." es aceptado pero el portal a veces lo ignora y deja la
+    // tarea como "Sin recordatorio". El array siempre dispara la alerta.
+    const remindersJson = JSON.stringify([dueTs]);
 
     try {
       await this.client.post("/crm/v3/objects/tasks", {
         properties: {
           hs_task_subject: title,
           hs_task_status: "NOT_STARTED",
+          hs_task_priority: "MEDIUM",
+          hs_task_type: "TODO",
           hs_timestamp: dueTs,
-          hs_task_reminders: String(dueTs),
+          hs_task_reminders: remindersJson,
           // HubSpot solo dispara la notificación del recordatorio si la tarea tiene owner.
           ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
         },
