@@ -142,6 +142,11 @@ const TOOLS: ChatCompletionTool[] = [
             type: "string",
             description: "Hora en formato 24h HH:MM, hora Bogotá (ej. '14:30' para 2:30 pm). Opcional — solo úsala si el usuario indica una hora explícita ('a las 3 pm', 'en la mañana', etc.). Si no se especifica, el sistema usa 09:00.",
           },
+          priority: {
+            type: "string",
+            enum: ["baja", "media", "alta"],
+            description: "Prioridad de la tarea. OMÍTELA por defecto (el sistema usa 'media'). SOLO pásala si el usuario indica EXPLÍCITAMENTE la urgencia ('prioridad alta', 'urgente', 'esto corre', 'baja prioridad', 'cuando puedas'). NO la infieras del tono ni del contexto por tu cuenta.",
+          },
         },
         required: ["title", "due_date"],
       },
@@ -400,6 +405,7 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
               title: input.title,
               dueDate: input.due_date,
               dueTime: input.due_time,
+              priority: input.priority,
             });
             break;
           case "complete_task":

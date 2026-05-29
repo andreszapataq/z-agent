@@ -1,5 +1,5 @@
 import { createAdminClient } from "../supabase";
-import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem } from "./types";
+import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
 
 const NATIVE_STAGE_LABELS: Array<{ slug: DealStage; label: string }> = [
   { slug: "saludo", label: "Nuevo contacto" },
@@ -132,7 +132,10 @@ export class NativeAdapter implements CrmAdapter {
     title: string;
     dueDate: string;
     dueTime?: string;
+    priority?: TaskPriority;
   }): Promise<string> {
+    // La tabla `tasks` nativa no tiene columna de prioridad todavía; aceptamos
+    // el parámetro para cumplir la interfaz y lo ignoramos.
     const { error } = await this.supabase.from("tasks").insert({
       tenant_id: this.tenantId,
       contact_id: input.contactId || null,

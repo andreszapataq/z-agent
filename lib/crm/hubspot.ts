@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from "axios";
-import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem } from "./types";
+import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
 // con su propio mapeo via `tenant.stage_map`.
@@ -487,8 +487,14 @@ export class HubSpotAdapter implements CrmAdapter {
     title: string;
     dueDate: string;
     dueTime?: string;
+    priority?: TaskPriority;
   }): Promise<string> {
     const { contactId, dealId, title, dueDate, dueTime } = input;
+    // Default MEDIUM: la mayoría de seguimientos comerciales lo son, y mantener
+    // un default fijo da predecibilidad. El agente solo manda priority si el
+    // usuario la pidió explícitamente.
+    const hsPriority =
+      input.priority === "alta" ? "HIGH" : input.priority === "baja" ? "LOW" : "MEDIUM";
     // YYYY-MM-DD without a time parses as midnight UTC, which is the prior day in Bogotá; anchor a la hora indicada (default 9am Bogotá).
     const time = dueTime && /^\d{2}:\d{2}$/.test(dueTime) ? dueTime : "09:00";
     const dueTs = /^\d{4}-\d{2}-\d{2}$/.test(dueDate)
@@ -558,7 +564,7 @@ export class HubSpotAdapter implements CrmAdapter {
         properties: {
           hs_task_subject: title,
           hs_task_status: "NOT_STARTED",
-          hs_task_priority: "MEDIUM",
+          hs_task_priority: hsPriority,
           hs_task_type: "TODO",
           hs_timestamp: dueTs,
           hs_task_reminders: dueTs,

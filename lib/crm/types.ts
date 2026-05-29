@@ -31,6 +31,8 @@ export type DealStage =
   | "cierre"
   | "perdido";
 
+export type TaskPriority = "baja" | "media" | "alta";
+
 export type StageInfo = {
   slug: DealStage;
   label: string;
@@ -61,6 +63,7 @@ export interface CrmAdapter {
     title: string;
     dueDate: string;
     dueTime?: string;
+    priority?: TaskPriority;
   }): Promise<string>;
   listTasks(input: {
     fromDate: string;
