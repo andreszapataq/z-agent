@@ -16,6 +16,11 @@ create table if not exists conversation_messages (
   role text not null check (role in ('user', 'assistant')),
   content text not null,
 
+  -- Contexto estructurado del turno (p.ej. los task_id reales que el agente
+  -- mostró al usuario), para que la confirmación en el turno siguiente use
+  -- el id exacto en vez de re-buscar o inventarlo.
+  metadata jsonb,
+
   created_at timestamptz default now()
 );
 

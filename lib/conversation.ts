@@ -25,32 +25,62 @@ const HISTORY_WINDOW_MINUTES = 360;
 // Tope de mensajes a reinyectar (≈6 turnos por lado).
 const HISTORY_MAX_MESSAGES = 12;
 
+// Referencia compacta a una tarea que el agente le mostró al usuario. Guardar
+// el `id` real es lo que evita que en el turno de confirmación ("Sí") el modelo
+// invente un task_id; con esto completa de forma determinista.
+export type TaskRef = {
+  id: string;
+  title: string;
+  dueDate: string;
+  status?: string;
+  dealName?: string;
+  contactName?: string;
+};
+
+export type ConversationContext = {
+  messages: ChatCompletionMessageParam[];
+  // task_id reales mostrados en el turno más reciente que listó tareas.
+  recentTasks: TaskRef[];
+};
+
 export async function loadConversationHistory(
   tenantId: string,
   phone: string
-): Promise<ChatCompletionMessageParam[]> {
+): Promise<ConversationContext> {
   try {
     const supabase = createAdminClient();
     const since = new Date(Date.now() - HISTORY_WINDOW_MINUTES * 60_000).toISOString();
     const { data, error } = await supabase
       .from("conversation_messages")
-      .select("role, content")
+      .select("role, content, metadata")
       .eq("tenant_id", tenantId)
       .eq("phone", phone)
       .gte("created_at", since)
       .order("created_at", { ascending: false })
       .limit(HISTORY_MAX_MESSAGES);
 
-    if (error || !data) return [];
+    if (error || !data) return { messages: [], recentTasks: [] };
 
-    // La query trae los más recientes primero; los volteamos a orden
-    // cronológico para que el modelo los lea en secuencia.
-    return data
+    // `data` viene del más reciente al más antiguo. Tomamos las tareas del
+    // turno más reciente que las tenga (las que el usuario tiene "frescas").
+    let recentTasks: TaskRef[] = [];
+    for (const m of data) {
+      const tasks = (m.metadata as any)?.tasks;
+      if (Array.isArray(tasks) && tasks.length > 0) {
+        recentTasks = tasks as TaskRef[];
+        break;
+      }
+    }
+
+    // Volteamos a orden cronológico para que el modelo lea la secuencia.
+    const messages = data
       .reverse()
       .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+
+    return { messages, recentTasks };
   } catch (e) {
     console.error("[conversation load error]", e);
-    return [];
+    return { messages: [], recentTasks: [] };
   }
 }
 
@@ -58,14 +88,15 @@ export async function saveConversationTurn(
   tenantId: string,
   phone: string,
   role: "user" | "assistant",
-  content: string
+  content: string,
+  metadata?: Record<string, unknown>
 ): Promise<void> {
   if (!content) return;
   try {
     const supabase = createAdminClient();
     await supabase
       .from("conversation_messages")
-      .insert({ tenant_id: tenantId, phone, role, content });
+      .insert({ tenant_id: tenantId, phone, role, content, metadata: metadata ?? null });
   } catch (e) {
     console.error("[conversation save error]", e);
   }

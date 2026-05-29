@@ -31,7 +31,19 @@ The webhook responds 200 immediately and processes async (`processIncomingMessag
 
 ### Agent loop (`lib/agent.ts`)
 
-Runs up to 10 OpenAI iterations using `openai.chat.completions.create` with `tools`. Each iteration either returns a final text response (no `tool_calls`) or executes one or more tool calls. Tool results are pushed to the messages array as `role: "tool"` and fed back. The model defaults to `gpt-4.1-mini` (override via `OPENAI_MODEL`). No conversation history is persisted — each WhatsApp message starts a fresh context. All iterations are logged to the `activity_log` table.
+Runs up to 10 OpenAI iterations using `openai.chat.completions.create` with `tools`. Each iteration either returns a final text response (no `tool_calls`) or executes one or more tool calls. Tool results are pushed to the messages array as `role: "tool"` and fed back. The model defaults to `gpt-4.1-mini` (override via `OPENAI_MODEL`). Recent conversation turns are reinjected (see [Conversation memory](#conversation-memory-libconversationts)). All iterations are logged to the `activity_log` table.
+
+### Conversation memory (`lib/conversation.ts`)
+
+Each incoming WhatsApp message used to start a fresh OpenAI context, which broke any multi-turn flow: when the agent asked "¿Confirmas que marque la tarea?" and the user replied "Sí", the next message had no idea which task — and the model would hallucinate a `task_id` (e.g. `"1"`), causing a 404 on `complete_task`.
+
+Now `processMessage(userMessage, tenant, phone)` loads and reinjects recent turns:
+
+- **Storage**: `conversation_messages` table (`tenant_id`, `phone`, `role`, `content`, `metadata jsonb`), keyed by tenant + the interlocutor's phone (the owner's number). Only the **textual** user/assistant turns are stored — not the intermediate `tool_calls`/`tool` messages.
+- **Window**: last 12 messages within the last 6h (`HISTORY_WINDOW_MINUTES` / `HISTORY_MAX_MESSAGES` in `lib/conversation.ts`). Reinjected between the system prompt and the current user message.
+- **Real task IDs**: textual turns alone don't carry the `task_id`, so a confirmation turn ("Sí") had no real ID to act on. When the agent runs `list_tasks`, the loop captures the returned tasks (id/title/dueDate/status/deal/contact, capped at 15) and persists them in `metadata.tasks` on that turn's assistant message. On the next turn, `loadConversationHistory` returns these as `recentTasks`, which are injected into the system prompt ("📌 TAREAS QUE YA LE MOSTRASTE..."). The prompt forbids inventing IDs and requires using a real `id` from `list_tasks` or that section. This makes completion-by-confirmation deterministic.
+- **Persistence points**: the user turn is saved on entry; the final assistant reply is saved via the `finish()` helper before every return (with `metadata.tasks` when tasks were listed). All saves fail-open — a Supabase error logs and continues, never breaking the agent.
+- **Not stored here**: the daily digest is sent by the cron (`lib/daily-digest.ts`), not through `processMessage`, so it is **not** in conversation memory. Replies to the digest work anyway because the agent re-runs `list_tasks`.
 
 ### CRM adapter pattern (`lib/crm/`)
 
@@ -110,6 +122,6 @@ The source of truth for schema is `supabase/migrations/` (versioned). `supabase/
 - **WhatsApp API version**: pinned via `GRAPH_API_VERSION` constant in `lib/whatsapp.ts` (currently `v22.0`) — bump when upgrading the Meta API version.
 - **Webhook signature**: incoming POSTs to `/api/webhook` are verified against `META_APP_SECRET` using HMAC-SHA256 (`verifyMetaSignature` in `lib/whatsapp.ts`). Requests without a valid `x-hub-signature-256` header return 403.
 - **Agent tool set**: tools are defined statically in `TOOLS` array in `lib/agent.ts`. Adding a new CRM action requires adding both a tool definition there and a case in the switch.
-- **No conversation memory**: each incoming WhatsApp message is a standalone context; the agent has no memory of prior messages in the same conversation.
+- **Conversation memory**: recent textual turns (last 12 / 6h) are reinjected per conversation — see [Conversation memory](#conversation-memory-libconversationts). Intermediate `tool_calls` are not stored; real `task_id`s are carried forward via `metadata.tasks` so confirmations ("Sí") complete deterministically.
 - **`maxDuration = 60`** on the webhook route — if the agent loop takes longer (e.g. many tool calls), Vercel will cut it off. Admin endpoints have `maxDuration = 30`.
 - **Security headers** are applied globally via `next.config.js` (X-Frame-Options DENY, HSTS, nosniff, restrictive Permissions-Policy).

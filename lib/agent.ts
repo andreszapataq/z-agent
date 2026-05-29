@@ -4,7 +4,7 @@ import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
 import { DealStage } from "./crm/types";
 import { createAdminClient } from "./supabase";
-import { loadConversationHistory, saveConversationTurn } from "./conversation";
+import { loadConversationHistory, saveConversationTurn, TaskRef } from "./conversation";
 
 let _openai: OpenAI | null = null;
 function getOpenAI(): OpenAI {
@@ -255,7 +255,9 @@ export async function processMessage(
 2. Si encuentras UNA sola tarea que matchea claramente con lo que dijo el usuario, llama \`complete_task\` directo.
 3. Si hay varias candidatas, pregunta al usuario cuál antes de marcar. NO marques múltiples a la ciegas.
 4. Si no encuentras nada, dilo y ofrece registrar la actividad como nota (\`create_note\` con el contacto/deal correspondiente).
-5. Después de marcar una tarea como completada, SIEMPRE pregunta al usuario si quiere crear un seguimiento ("¿Te creo un seguimiento? ¿Para cuándo?"). Si la conversación da pistas claras (ej. "el cliente pidió revisar la propuesta en 3 días"), sugiere una fecha concreta. NO crees el seguimiento sin confirmación del usuario.`;
+5. Después de marcar una tarea como completada, SIEMPRE pregunta al usuario si quiere crear un seguimiento ("¿Te creo un seguimiento? ¿Para cuándo?"). Si la conversación da pistas claras (ej. "el cliente pidió revisar la propuesta en 3 días"), sugiere una fecha concreta. NO crees el seguimiento sin confirmación del usuario.
+
+⚠️ task_id OBLIGATORIO Y REAL: el \`task_id\` que pasas a \`complete_task\` SIEMPRE debe venir del campo \`id\` que devolvió \`list_tasks\`, o de la sección "TAREAS QUE YA LE MOSTRASTE AL USUARIO" del system prompt. NUNCA inventes, adivines ni uses un id placeholder como "1", "task1", etc. Si pediste confirmación en un turno anterior y el usuario ahora dice "sí"/"confírmalo"/"hazlo": usa el task_id de la sección "TAREAS QUE YA LE MOSTRASTE" si está ahí; si no está, llama \`list_tasks\` de nuevo para reobtenerlo ANTES de completar. Jamás llames \`complete_task\` sin un id real.`;
 
   const listTasksContext =
     `\n\n📋 REGLA DE LISTAR TAREAS: cuando el usuario pida ver sus tareas ("mis tareas de hoy", "qué tengo mañana", "tareas del viernes", "tareas de la semana"), usa \`list_tasks\` con from_date/to_date resueltos contra la FECHA ACTUAL. Rangos típicos:
@@ -268,7 +270,26 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
   // Historial reciente de la conversación (turnos user/assistant) para que
   // el agente pueda actuar sobre confirmaciones y referencias del mensaje
   // anterior ("Sí", "marcala como completada"). Vacío si no hay phone.
-  const history = phone ? await loadConversationHistory(tenant.id, phone) : [];
+  const { messages: history, recentTasks } = phone
+    ? await loadConversationHistory(tenant.id, phone)
+    : { messages: [], recentTasks: [] };
+
+  // Inyectamos los task_id REALES de las tareas que el agente le mostró al
+  // usuario en turnos previos. Sin esto, en la confirmación ("Sí") el modelo
+  // no tiene el id y termina inventándolo (p.ej. "1"), lo que rompe
+  // complete_task. Con esto completa de forma determinista.
+  let recentTasksContext = "";
+  if (recentTasks.length > 0) {
+    const lines = recentTasks
+      .map((t) => {
+        const extra = [t.dealName && `deal: ${t.dealName}`, t.contactName && `contacto: ${t.contactName}`]
+          .filter(Boolean)
+          .join(" | ");
+        return `- task_id=${t.id} | "${t.title}" | vence ${t.dueDate}${t.status ? ` | estado ${t.status}` : ""}${extra ? ` | ${extra}` : ""}`;
+      })
+      .join("\n");
+    recentTasksContext = `\n\n📌 TAREAS QUE YA LE MOSTRASTE AL USUARIO EN ESTA CONVERSACIÓN (usa el task_id EXACTO de esta lista para complete_task; NUNCA inventes un id como "1"):\n${lines}`;
+  }
 
   const messages: ChatCompletionMessageParam[] = [
     {
@@ -280,7 +301,8 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
         notesContext +
         tasksContext +
         listTasksContext +
-        completeTaskContext,
+        completeTaskContext +
+        recentTasksContext,
     },
     ...history,
     { role: "user", content: userMessage },
@@ -289,10 +311,23 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
   await logActivity(tenant.id, "message_received", { text: userMessage });
   if (phone) await saveConversationTurn(tenant.id, phone, "user", userMessage);
 
+  // Acumulamos las tareas que el agente liste durante este loop para
+  // persistirlas como metadata del turno (sus task_id reales viajan al
+  // siguiente mensaje de la conversación).
+  let listedTasks: TaskRef[] = [];
+
   // Persistimos la respuesta final del agente antes de devolverla, para que
   // el siguiente mensaje de la conversación la tenga como contexto.
   const finish = async (reply: string): Promise<string> => {
-    if (phone) await saveConversationTurn(tenant.id, phone, "assistant", reply);
+    if (phone) {
+      await saveConversationTurn(
+        tenant.id,
+        phone,
+        "assistant",
+        reply,
+        listedTasks.length > 0 ? { tasks: listedTasks } : undefined
+      );
+    }
     return reply;
   };
 
@@ -367,15 +402,25 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
           case "complete_task":
             toolResult = await crm.completeTask(input.task_id);
             break;
-          case "list_tasks":
-            toolResult = JSON.stringify(
-              await crm.listTasks({
-                fromDate: input.from_date,
-                toDate: input.to_date,
-                includeCompleted: input.include_completed === true,
-              })
-            );
+          case "list_tasks": {
+            const tasks = await crm.listTasks({
+              fromDate: input.from_date,
+              toDate: input.to_date,
+              includeCompleted: input.include_completed === true,
+            });
+            // Guardamos los task_id reales para el contexto del próximo turno.
+            // Cap a 15 para no inflar el contexto si el usuario lista muchas.
+            listedTasks = tasks.slice(0, 15).map((t) => ({
+              id: t.id,
+              title: t.title,
+              dueDate: t.dueDate,
+              status: t.status,
+              dealName: t.dealName,
+              contactName: t.contactName,
+            }));
+            toolResult = JSON.stringify(tasks);
             break;
+          }
           default:
             toolResult = `Tool desconocido: ${name}`;
         }
