@@ -4,6 +4,7 @@ import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
 import { DealStage } from "./crm/types";
 import { createAdminClient } from "./supabase";
+import { loadConversationHistory, saveConversationTurn } from "./conversation";
 
 let _openai: OpenAI | null = null;
 function getOpenAI(): OpenAI {
@@ -202,7 +203,11 @@ async function logActivity(tenantId: string, action: string, details: any) {
   }
 }
 
-export async function processMessage(userMessage: string, tenant: Tenant): Promise<string> {
+export async function processMessage(
+  userMessage: string,
+  tenant: Tenant,
+  phone?: string
+): Promise<string> {
   const crm = getCrmAdapter(tenant);
 
   // The OpenAI model has no notion of the current date, so it tends to
@@ -260,6 +265,11 @@ export async function processMessage(userMessage: string, tenant: Tenant): Promi
 - "la próxima semana" → from_date = el próximo lunes, to_date = el domingo siguiente.
 Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el deal/contacto asociado. Si no hay tareas en el rango, dilo claramente.`;
 
+  // Historial reciente de la conversación (turnos user/assistant) para que
+  // el agente pueda actuar sobre confirmaciones y referencias del mensaje
+  // anterior ("Sí", "marcala como completada"). Vacío si no hay phone.
+  const history = phone ? await loadConversationHistory(tenant.id, phone) : [];
+
   const messages: ChatCompletionMessageParam[] = [
     {
       role: "system",
@@ -272,10 +282,19 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
         listTasksContext +
         completeTaskContext,
     },
+    ...history,
     { role: "user", content: userMessage },
   ];
 
   await logActivity(tenant.id, "message_received", { text: userMessage });
+  if (phone) await saveConversationTurn(tenant.id, phone, "user", userMessage);
+
+  // Persistimos la respuesta final del agente antes de devolverla, para que
+  // el siguiente mensaje de la conversación la tenga como contexto.
+  const finish = async (reply: string): Promise<string> => {
+    if (phone) await saveConversationTurn(tenant.id, phone, "assistant", reply);
+    return reply;
+  };
 
   // Loop del agente: usa tools hasta llegar a una respuesta final
   for (let i = 0; i < 10; i++) {
@@ -291,7 +310,7 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
     messages.push(message);
 
     if (!message.tool_calls || message.tool_calls.length === 0) {
-      return message.content || "Listo.";
+      return finish(message.content || "Listo.");
     }
 
     for (const toolCall of message.tool_calls) {
@@ -374,5 +393,5 @@ Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el dea
     }
   }
 
-  return "No pude completar la acción. Intenta reformular.";
+  return finish("No pude completar la acción. Intenta reformular.");
 }

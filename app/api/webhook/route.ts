@@ -70,7 +70,7 @@ async function processIncomingMessage(body: any) {
   // Solo el owner del tenant puede activar el agente
   if (message.from !== tenant.owner_number) return;
 
-  const reply = await processMessage(message.text.body, tenant);
+  const reply = await processMessage(message.text.body, tenant, message.from);
 
   if (tenant.whatsapp_phone_id && tenant.whatsapp_token) {
     await sendWhatsAppMessage(
