@@ -265,7 +265,10 @@ export async function processMessage(
 - "mañana" → from_date = to_date = fecha actual + 1.
 - "esta semana" → from_date = fecha actual, to_date = el próximo domingo (inclusive).
 - "la próxima semana" → from_date = el próximo lunes, to_date = el domingo siguiente.
-Al responder, presenta cada tarea con título, fecha (y hora si la hay) y el deal/contacto asociado. Si no hay tareas en el rango, dilo claramente.`;
+
+IMPORTANTE — "pendiente" NO significa "de hoy". Una tarea pendiente es cualquiera no completada, sin importar su fecha (incluidas las VENCIDAS de días pasados). Cuando el usuario pida sus tareas SIN indicar un día concreto — "tareas pendientes", "mis tareas", "qué tengo pendiente", "todas las tareas", "qué tengo por hacer" — NO limites el rango a hoy. Usa un rango amplio: from_date = fecha actual − 30 días, to_date = fecha actual + 30 días. Así capturas vencidas + hoy + próximas. Solo restringe el rango cuando el usuario nombre un día/periodo específico.
+
+Al responder, agrupa las tareas por estado temporal y preséntalas en este orden: primero las VENCIDAS (fecha anterior a hoy), luego las de HOY, luego las PRÓXIMAS (fecha futura). Muestra cada tarea con título, fecha (y hora si la hay) y el deal/contacto asociado. Si no hay tareas en el rango, dilo claramente.`;
 
   // Historial reciente de la conversación (turnos user/assistant) para que
   // el agente pueda actuar sobre confirmaciones y referencias del mensaje
