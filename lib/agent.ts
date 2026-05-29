@@ -251,19 +251,19 @@ export async function processMessage(
 
   const completeTaskContext =
     `\n\n☑️ REGLA DE COMPLETAR TAREAS: cuando el usuario diga que ya hizo algo ("ya llamé", "mandé la cotización", "reunión hecha", "listo lo del cliente X"):
-1. Llama \`list_tasks\` con un rango razonable (de hoy hacia atrás 7 días, o un rango más amplio si el usuario dio una pista temporal) para localizar la tarea.
+1. Llama \`list_tasks\` para localizar la tarea. Usa por defecto un rango amplio (from_date = fecha actual − 30 días, to_date = fecha actual + 30 días) para cubrir tareas VENCIDAS y también futuras (el usuario pudo adelantarse). Solo restringe el rango si el usuario dio una pista temporal clara.
 2. Si encuentras UNA sola tarea que matchea claramente con lo que dijo el usuario, llama \`complete_task\` directo.
 3. Si hay varias candidatas, pregunta al usuario cuál antes de marcar. NO marques múltiples a la ciegas.
 4. Si no encuentras nada, dilo y ofrece registrar la actividad como nota (\`create_note\` con el contacto/deal correspondiente).
-5. Después de marcar una tarea como completada, SIEMPRE pregunta al usuario si quiere crear un seguimiento ("¿Te creo un seguimiento? ¿Para cuándo?"). Si la conversación da pistas claras (ej. "el cliente pidió revisar la propuesta en 3 días"), sugiere una fecha concreta. NO crees el seguimiento sin confirmación del usuario.
+5. Después de marcar una tarea como completada, cierra con UNA sola pregunta: si quiere crear un seguimiento ("¿Te creo un seguimiento? ¿Para cuándo?"). Esta es tu pregunta de cierre — reemplaza el "¿algo más?" genérico; no encadenes dos preguntas de cierre seguidas. Si la conversación da pistas claras (ej. "el cliente pidió revisar la propuesta en 3 días"), sugiere una fecha concreta. NO crees el seguimiento sin confirmación del usuario.
 
 ⚠️ task_id OBLIGATORIO Y REAL: el \`task_id\` que pasas a \`complete_task\` SIEMPRE debe venir del campo \`id\` que devolvió \`list_tasks\`, o de la sección "TAREAS QUE YA LE MOSTRASTE AL USUARIO" del system prompt. NUNCA inventes, adivines ni uses un id placeholder como "1", "task1", etc. Si pediste confirmación en un turno anterior y el usuario ahora dice "sí"/"confírmalo"/"hazlo": usa el task_id de la sección "TAREAS QUE YA LE MOSTRASTE" si está ahí; si no está, llama \`list_tasks\` de nuevo para reobtenerlo ANTES de completar. Jamás llames \`complete_task\` sin un id real.`;
 
   const listTasksContext =
-    `\n\n📋 REGLA DE LISTAR TAREAS: cuando el usuario pida ver sus tareas ("mis tareas de hoy", "qué tengo mañana", "tareas del viernes", "tareas de la semana"), usa \`list_tasks\` con from_date/to_date resueltos contra la FECHA ACTUAL. Rangos típicos:
+    `\n\n📋 REGLA DE LISTAR TAREAS: cuando el usuario pida ver sus tareas ("mis tareas de hoy", "qué tengo mañana", "tareas del viernes", "tareas de la semana"), usa \`list_tasks\`. Resuelve TODAS las fechas relativas con las reglas de la sección 📅 FECHA ACTUAL (es la fuente única para "mañana", "el viernes", "el próximo lunes", etc.; no las redefinas aquí). Según lo que pida, elige el rango:
 - "hoy" → from_date = to_date = fecha actual.
-- "mañana" → from_date = to_date = fecha actual + 1.
-- "esta semana" → from_date = fecha actual, to_date = el próximo domingo (inclusive).
+- "mañana" → from_date = to_date = el día siguiente.
+- "esta semana" → from_date = fecha actual, to_date = el próximo domingo (inclusive). Si hoy YA es domingo, esto deja solo hoy: muéstralo y ofrece revisar la próxima semana.
 - "la próxima semana" → from_date = el próximo lunes, to_date = el domingo siguiente.
 
 IMPORTANTE — "pendiente" NO significa "de hoy". Una tarea pendiente es cualquiera no completada, sin importar su fecha (incluidas las VENCIDAS de días pasados). Cuando el usuario pida sus tareas SIN indicar un día concreto — "tareas pendientes", "mis tareas", "qué tengo pendiente", "todas las tareas", "qué tengo por hacer" — NO limites el rango a hoy. Usa un rango amplio: from_date = fecha actual − 30 días, to_date = fecha actual + 30 días. Así capturas vencidas + hoy + próximas. Solo restringe el rango cuando el usuario nombre un día/periodo específico.
