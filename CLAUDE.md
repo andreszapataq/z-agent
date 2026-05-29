@@ -33,6 +33,26 @@ The webhook responds 200 immediately and processes async (`processIncomingMessag
 
 Runs up to 10 OpenAI iterations using `openai.chat.completions.create` with `tools`. Each iteration either returns a final text response (no `tool_calls`) or executes one or more tool calls. Tool results are pushed to the messages array as `role: "tool"` and fed back. The model defaults to `gpt-4.1-mini` (override via `OPENAI_MODEL`). Recent conversation turns are reinjected (see [Conversation memory](#conversation-memory-libconversationts)). All iterations are logged to the `activity_log` table.
 
+### Where the agent's instructions live (and when to touch each)
+
+The system prompt the model sees is assembled in `processMessage` from **three layers**. Knowing which layer to edit is the difference between a one-line fix and chasing the same bug twice.
+
+| Layer | What it is | Lives in | Needs deploy? | Scope |
+|---|---|---|---|---|
+| **1. Logic / tools** | `TOOLS` array, the tool-dispatch `switch`, the CRM adapters. The ground truth of what the agent *can* do and how it actually behaves. | Code (repo) | Yes | All tenants |
+| **2. Code prompt blocks** | `dateContext`, `stagesContext`, `notesContext`, `tasksContext`, `listTasksContext`, `completeTaskContext`, `recentTasksContext` — concatenated onto the system prompt. Shared guidance on *how to use* the tools. | Code (`lib/agent.ts`) | Yes | All tenants |
+| **3. `tenant.system_prompt`** | Persona, business context, tone, per-client policy. Prepended as the first block. | **Supabase `tenants` table** | **No** — effect is immediate | One tenant |
+
+Mental model: **code = what the agent CAN do; prompt = what it SHOULD do.** A behavior bug can live in either, or in a *mismatch* between them.
+
+Decision heuristic when adjusting behavior:
+
+1. **Is the desired behavior even possible with current code/tools/data?** If not → code change (layer 1), usually plus a layer-2 block telling the model how to use the new capability. (Example: conversation memory — no prompt wording can create memory the code doesn't pass in.)
+2. **Possible, but the agent does the wrong thing** → it's a prompt issue. Cross-tenant? → layer 2. Specific to one client (business/tone/policy)? → layer 3. (Example: "pendiente ≠ hoy" was a pure layer-2 fix; adding the `negociación` stage description was a layer-3 fix.)
+3. **After ANY code change, scan all prompt layers for statements that now contradict what the code does.** This step is easy to skip and bites hard: when conversation memory was added (code), `tenant.system_prompt` still said *"cada mensaje llega sin memoria… pide que repita el contacto"* — the stale prompt actively sabotaged the new capability until it was rewritten.
+
+⚠️ **Process caveat**: layer 3 lives only in the DB, not in git — fast to change (no deploy, per-client) but **unversioned**, no review, and prone to silently drifting from code reality. When editing a `tenant.system_prompt`, consider whether it should also be captured somewhere reviewable; as more tenants onboard, versioning/seeding tenant prompts becomes worthwhile.
+
 ### Conversation memory (`lib/conversation.ts`)
 
 Each incoming WhatsApp message used to start a fresh OpenAI context, which broke any multi-turn flow: when the agent asked "¿Confirmas que marque la tarea?" and the user replied "Sí", the next message had no idea which task — and the model would hallucinate a `task_id` (e.g. `"1"`), causing a 404 on `complete_task`.
@@ -68,7 +88,7 @@ When a HubSpot deal enters the configured proposal stage (or when `pollProposalE
 
 - **Trigger**: `/api/cron/check-deals` runs at 12:00 UTC daily (= 7am Bogotá). It runs **before** the daily digest (8am Bogotá) so the newly-created tasks are visible in the same morning's digest. Two stages inside: `pollProposalEmails` → `pollProposalNotifications` (in `lib/hubspot-poll.ts`).
 - **Task shape**: title `Enviar WhatsApp de seguimiento a {firstname} de {company} ({phone}) — {deal label}`. Due **today 09:00 Bogotá** — i.e. ~2 hours after the cron run. Since the cron only picks up emails sent _before_ today's 7am scan, "today" from the cron's perspective is "next day" from the email's perspective (≥16h of review time for the client in the typical 9am–6pm proposal-send window).
-- **Reminder**: `hs_task_reminders` is set as a JSON-stringified array (`[dueTs]`). HubSpot ignores the bare-string form for some portals; the array form reliably populates the "Recordatorio" field and fires the notification at the due time.
+- **Reminder**: `hs_task_reminders` is set as a **raw epoch-ms timestamp** (`dueTs`, e.g. `1780408800000`) in `HubSpotAdapter.createTask`. The JSON-array form (`[dueTs]`) used previously is now rejected by HubSpot with `INVALID_DATE` ("Expected to be an epoch timestamp") and 400s the whole task creation — this broke both chat-created tasks and proposal follow-ups until fixed. A single reminder at the due time fires the notification (requires the task to have an owner).
 - **Owner**: prefers the deal's `hubspot_owner_id`, falls back to `tenant.hubspot_owner_id`. If neither is set we log a warning — without owner, HubSpot won't fire the reminder.
 - **Dedup**: `activity_log.action = 'proposal_followup_queued'` keyed on `details->>deal_id`.
 - **Auth**: `Authorization: Bearer <CRON_SECRET>` (Vercel Cron sends this when `CRON_SECRET` is set).

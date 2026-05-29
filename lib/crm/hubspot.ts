@@ -549,11 +549,10 @@ export class HubSpotAdapter implements CrmAdapter {
       );
     }
 
-    // hs_task_reminders requiere una lista JSON de timestamps en ms; el string
-    // crudo "1234..." es aceptado pero el portal a veces lo ignora y deja la
-    // tarea como "Sin recordatorio". El array siempre dispara la alerta.
-    const remindersJson = JSON.stringify([dueTs]);
-
+    // hs_task_reminders espera un epoch ms CRUDO (p.ej. 1780408800000). La forma
+    // de array (`[ts]`) que usábamos antes ahora HubSpot la rechaza con
+    // INVALID_DATE ("Expected to be an epoch timestamp"). Un solo recordatorio
+    // en el due time basta para que dispare la notificación.
     try {
       await this.client.post("/crm/v3/objects/tasks", {
         properties: {
@@ -562,7 +561,7 @@ export class HubSpotAdapter implements CrmAdapter {
           hs_task_priority: "MEDIUM",
           hs_task_type: "TODO",
           hs_timestamp: dueTs,
-          hs_task_reminders: remindersJson,
+          hs_task_reminders: dueTs,
           // HubSpot solo dispara la notificación del recordatorio si la tarea tiene owner.
           ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
         },
@@ -577,6 +576,12 @@ export class HubSpotAdapter implements CrmAdapter {
     } catch (err: any) {
       if (err?.response?.status === 403) {
         return `Tarea "${title}" registrada (HubSpot no expone el scope de tareas en este plan; queda en el log de actividad)`;
+      }
+      // Exponemos el motivo de validación de HubSpot; si no, queda un opaco
+      // "Request failed with status code 400" en el activity_log.
+      const hsMsg = err?.response?.data?.message;
+      if (hsMsg) {
+        throw new Error(`HubSpot ${err.response.status}: ${hsMsg}`);
       }
       throw err;
     }
