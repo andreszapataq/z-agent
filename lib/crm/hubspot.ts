@@ -1,5 +1,6 @@
 import axios, { AxiosInstance } from "axios";
 import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
+import { normalizePhone } from "./phone";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
 // con su propio mapeo via `tenant.stage_map`.
@@ -83,7 +84,7 @@ export class HubSpotAdapter implements CrmAdapter {
     // Top-level `query` searches firstname/lastname/email/company together; a single-property filterGroup missed name matches.
     const res = await this.client.post("/crm/v3/objects/contacts/search", {
       query,
-      properties: ["firstname", "lastname", "email", "company", "phone"],
+      properties: ["firstname", "lastname", "email", "company", "phone", "jobtitle"],
       limit: 5,
     });
 
@@ -93,12 +94,14 @@ export class HubSpotAdapter implements CrmAdapter {
       company: c.properties.company,
       email: c.properties.email,
       phone: c.properties.phone,
+      jobtitle: c.properties.jobtitle,
     }));
   }
 
-  async createContact(input: { name: string; company?: string; email?: string; phone?: string }): Promise<Contact> {
+  async createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact> {
     const [firstname, ...rest] = input.name.split(" ");
     const lastname = rest.join(" ");
+    const phone = normalizePhone(input.phone);
 
     const res = await this.client.post("/crm/v3/objects/contacts", {
       properties: {
@@ -106,7 +109,8 @@ export class HubSpotAdapter implements CrmAdapter {
         lastname,
         company: input.company,
         email: input.email,
-        phone: input.phone,
+        phone,
+        jobtitle: input.jobtitle,
       },
     });
 
@@ -115,7 +119,8 @@ export class HubSpotAdapter implements CrmAdapter {
       name: input.name,
       company: input.company,
       email: input.email,
-      phone: input.phone,
+      phone,
+      jobtitle: input.jobtitle,
     };
   }
 

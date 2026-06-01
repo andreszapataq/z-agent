@@ -11,6 +11,7 @@ export type Contact = {
   company?: string;
   email?: string;
   phone?: string;
+  jobtitle?: string;
 };
 
 export type Deal = {
@@ -52,7 +53,7 @@ export type TaskItem = {
 
 export interface CrmAdapter {
   searchContact(query: string): Promise<Contact[]>;
-  createContact(input: { name: string; company?: string; email?: string; phone?: string }): Promise<Contact>;
+  createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact>;
   searchDeal(query: string): Promise<Deal[]>;
   createDeal(input: { contactId: string; name: string; amount?: number; stage?: DealStage }): Promise<Deal>;
   moveDeal(dealId: string, stage: DealStage): Promise<string>;

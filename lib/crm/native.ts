@@ -1,5 +1,6 @@
 import { createAdminClient } from "../supabase";
 import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
+import { normalizePhone } from "./phone";
 
 const NATIVE_STAGE_LABELS: Array<{ slug: DealStage; label: string }> = [
   { slug: "saludo", label: "Nuevo contacto" },
@@ -32,10 +33,12 @@ export class NativeAdapter implements CrmAdapter {
       company: c.company,
       email: c.email,
       phone: c.phone,
+      jobtitle: c.position,
     }));
   }
 
-  async createContact(input: { name: string; company?: string; email?: string; phone?: string }): Promise<Contact> {
+  async createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact> {
+    const phone = normalizePhone(input.phone);
     const { data, error } = await this.supabase
       .from("contacts")
       .insert({
@@ -43,7 +46,8 @@ export class NativeAdapter implements CrmAdapter {
         full_name: input.name,
         company: input.company,
         email: input.email,
-        phone: input.phone,
+        phone,
+        position: input.jobtitle,
         source: "whatsapp",
       })
       .select()
@@ -56,6 +60,7 @@ export class NativeAdapter implements CrmAdapter {
       company: data.company,
       email: data.email,
       phone: data.phone,
+      jobtitle: data.position,
     };
   }
 
