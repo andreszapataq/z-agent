@@ -2,14 +2,26 @@
 // dicta el usuario y lo que devuelve el CRM: minúsculas, sin acentos, sin
 // sufijos legales (S.A.S., S.A., Ltda., Inc., LLC) y sin puntuación. Así
 // "Vittal Medica S.A.S." y "Vittal Médica SAS" matchean igual.
+// Sufijos legales (tipo de organización) que HubSpot a veces NO guarda en el
+// nombre. Se quitan del query de búsqueda y de la comparación.
+const LEGAL_SUFFIX_RE = /\b(s\.?\s?a\.?\s?s\.?|s\.?\s?a\.?|ltda\.?|inc\.?|llc\.?)\b/gi;
+
 export function normalizeCompanyName(s: string): string {
   return s
     .toLowerCase()
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "") // quita acentos
-    .replace(/\b(s\.?\s?a\.?\s?s\.?|s\.?\s?a\.?|ltda\.?|inc\.?|llc\.?)\b/g, "") // sufijos legales
+    .replace(LEGAL_SUFFIX_RE, "") // sufijos legales
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
+}
+
+// Quita el sufijo legal preservando el resto del nombre (acentos/mayúsculas).
+// HubSpot exige que TODOS los tokens del query existan en el registro, así que
+// buscar "Centros Hospitalarios del Caribe S.A.S." cuando en HS está como
+// "Centros Hospitalarios del Caribe" devuelve 0. Buscamos sin el sufijo.
+export function stripLegalSuffix(name: string): string {
+  return name.replace(LEGAL_SUFFIX_RE, " ").replace(/\s+/g, " ").trim();
 }
 
 // Decide si alguno de los nombres candidatos del CRM corresponde al nombre

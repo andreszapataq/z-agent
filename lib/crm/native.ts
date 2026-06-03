@@ -1,7 +1,7 @@
 import { createAdminClient } from "../supabase";
 import { CrmAdapter, Company, CompanySearchResult, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
 import { normalizePhone } from "./phone";
-import { companyMatches } from "./match";
+import { companyMatches, stripLegalSuffix } from "./match";
 
 const NATIVE_STAGE_LABELS: Array<{ slug: DealStage; label: string }> = [
   { slug: "saludo", label: "Nuevo contacto" },
@@ -45,25 +45,30 @@ export class NativeAdapter implements CrmAdapter {
     const capped = (names || []).map((n) => n.trim()).filter(Boolean).slice(0, 25);
     return Promise.all(
       capped.map(async (name): Promise<CompanySearchResult> => {
+        // Buscamos sin el sufijo legal (el texto guardado puede no tenerlo).
+        const cleaned = stripLegalSuffix(name) || name;
         const { data, error } = await this.supabase
           .from("contacts")
           .select("company")
           .eq("tenant_id", this.tenantId)
-          .ilike("company", `%${name}%`)
+          .ilike("company", `%${cleaned}%`)
           .limit(5);
-        if (error) return { query: name, found: false, matches: [], error: error.message };
+        if (error) return { query: name, status: "error", matches: [], error: error.message };
 
         const seen = new Set<string>();
-        const matches: Company[] = [];
+        const candidates: Company[] = [];
         for (const row of data || []) {
           const c = (row as any).company as string | null;
           if (c && !seen.has(c)) {
             seen.add(c);
-            matches.push({ id: c, name: c });
+            candidates.push({ id: c, name: c });
           }
         }
-        const found = companyMatches(name, matches.map((m) => m.name));
-        return { query: name, found, matches };
+        const matched = candidates.filter((c) => companyMatches(name, [c.name]));
+        if (matched.length > 0) return { query: name, status: "exists", matches: matched };
+        if (candidates.length > 0)
+          return { query: name, status: "possible", matches: candidates.slice(0, 3) };
+        return { query: name, status: "not_found", matches: [] };
       })
     );
   }

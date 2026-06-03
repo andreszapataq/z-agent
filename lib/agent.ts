@@ -269,7 +269,12 @@ export async function processMessage(
   }
 
   const companiesContext =
-    `\n\n🏢 REGLA DE EMPRESAS: las empresas (compañías/cuentas) son un objeto DISTINTO de los contactos. Para verificar si una o varias empresas existen en el CRM ("¿qué empresas tenemos creadas?", "¿cuáles de estas faltan por crear?", "¿está registrada la empresa X?"), usa SIEMPRE \`search_company\`, NUNCA \`search_contact\`. Pasa TODOS los nombres en un solo llamado (la tool acepta una lista y los busca en paralelo). Para cada empresa, básate en el campo \`found\`: si es true ya existe; si es false repórtala como faltante por crear. No declares una empresa como existente o faltante sin que provenga del resultado de \`search_company\`.`;
+    `\n\n🏢 REGLA DE EMPRESAS: las empresas (compañías/cuentas) son un objeto DISTINTO de los contactos. Para verificar si una o varias empresas existen en el CRM ("¿qué empresas tenemos creadas?", "¿cuáles de estas faltan por crear?", "¿está registrada la empresa X?"), usa SIEMPRE \`search_company\`, NUNCA \`search_contact\`. Pasa TODOS los nombres en un solo llamado (la tool acepta una lista). Cada resultado trae un campo \`status\`; interprétalo así:
+- \`status: "exists"\` → la empresa YA está creada (en \`matches\` viene el nombre real con el que está en el CRM, que puede diferir del que dictó el usuario, p.ej. sin el "S.A.S."). Repórtala como existente.
+- \`status: "possible"\` → hay un candidato parecido pero NO idéntico (p.ej. el usuario dijo "Clínica Porto Azul" y en el CRM aparece "Clínica Portoazul Auna"). NO afirmes que es la misma ni que falta: MUÉSTRALE el candidato al usuario y pregúntale si es la misma empresa ("Encontré 'X' en el CRM, ¿es la misma que 'Y'?"). Decide según su respuesta.
+- \`status: "not_found"\` → no apareció ningún candidato; repórtala como faltante por crear.
+- \`status: "error"\` → no se pudo verificar (límite de consultas o permisos); dilo explícitamente, NO la clasifiques como existente ni faltante.
+Nunca declares el estado de una empresa sin que provenga del resultado de \`search_company\`.`;
 
   const noHallucinationContext =
     `\n\n🚫 REGLA ANTIALUCINACIÓN (CRÍTICA): NUNCA afirmes que un contacto, empresa, deal o tarea existe o NO existe en el CRM sin haberlo verificado con la tool correspondiente (\`search_company\`, \`search_contact\`, \`search_deal\`, \`list_tasks\`) en este mismo turno. Si el usuario pide ese tipo de verificación, primero llama la tool y responde SOLO con base en su resultado. Si no tienes una tool capaz de verificar lo que se pide, dilo explícitamente en vez de adivinar. JAMÁS devuelvas el listado que te dio el usuario como si fuera el resultado de una verificación.`;

@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from "axios";
 import { CrmAdapter, Company, CompanySearchResult, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
 import { normalizePhone } from "./phone";
-import { companyMatches } from "./match";
+import { companyMatches, stripLegalSuffix } from "./match";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
 // con su propio mapeo via `tenant.stage_map`.
@@ -110,21 +110,21 @@ export class HubSpotAdapter implements CrmAdapter {
   async searchCompany(names: string[]): Promise<CompanySearchResult[]> {
     const capped = (names || []).map((n) => n.trim()).filter(Boolean).slice(0, 25);
 
-    const searchOne = async (name: string): Promise<CompanySearchResult> => {
+    // Una búsqueda contra companies con reintento ante 429. Devuelve los
+    // candidatos crudos (o lanza para que el caller decida el estado).
+    const rawSearch = async (query: string): Promise<Company[]> => {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await this.client.post("/crm/v3/objects/companies/search", {
-            query: name,
+            query,
             properties: ["name", "domain"],
             limit: 5,
           });
-          const matches: Company[] = (res.data.results || []).map((c: any) => ({
+          return (res.data.results || []).map((c: any) => ({
             id: c.id,
             name: c.properties?.name || "(sin nombre)",
             domain: c.properties?.domain,
           }));
-          const found = companyMatches(name, matches.map((m) => m.name));
-          return { query: name, found, matches };
         } catch (err: any) {
           const status = err?.response?.status;
           // Reintentamos solo ante rate limit; respetamos Retry-After si viene.
@@ -133,11 +133,42 @@ export class HubSpotAdapter implements CrmAdapter {
             await new Promise((r) => setTimeout(r, retryAfter * 1000));
             continue;
           }
-          const msg = err?.response?.data?.message || err.message;
-          return { query: name, found: false, matches: [], error: msg };
+          throw err;
         }
       }
-      return { query: name, found: false, matches: [], error: "rate limit (429) tras reintentos" };
+      throw new Error("rate limit (429) tras reintentos");
+    };
+
+    const searchOne = async (name: string): Promise<CompanySearchResult> => {
+      try {
+        // Pase 1: nombre sin sufijo legal (HubSpot exige que todos los tokens
+        // existan; "S.A.S." extra da 0 resultados aunque la empresa exista).
+        const cleaned = stripLegalSuffix(name) || name;
+        let candidates = await rawSearch(cleaned);
+
+        const matched = candidates.filter((c) => companyMatches(name, [c.name]));
+        if (matched.length > 0) return { query: name, status: "exists", matches: matched };
+        if (candidates.length > 0)
+          return { query: name, status: "possible", matches: candidates.slice(0, 3) };
+
+        // Pase 2 (solo si el pase 1 no trajo nada): query más laxo con los
+        // primeros 2 tokens. HubSpot hace prefix-match por token, así que
+        // "Clínica Porto" alcanza "Clínica Portoazul Auna". Lo devolvemos como
+        // "possible" para que el agente lo confirme con el usuario.
+        const tokens = cleaned.split(" ").filter(Boolean);
+        if (tokens.length > 2) {
+          candidates = await rawSearch(tokens.slice(0, 2).join(" "));
+          const m2 = candidates.filter((c) => companyMatches(name, [c.name]));
+          if (m2.length > 0) return { query: name, status: "exists", matches: m2 };
+          if (candidates.length > 0)
+            return { query: name, status: "possible", matches: candidates.slice(0, 3) };
+        }
+
+        return { query: name, status: "not_found", matches: [] };
+      } catch (err: any) {
+        const msg = err?.response?.data?.message || err.message;
+        return { query: name, status: "error", matches: [], error: msg };
+      }
     };
 
     // Pool de concurrencia: a lo más CONCURRENCY búsquedas en vuelo a la vez,

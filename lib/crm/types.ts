@@ -30,12 +30,16 @@ export type Company = {
   domain?: string;
 };
 
-// Resultado por cada nombre buscado en searchCompany. `found` es la señal
-// determinista para que el agente diga "existe" / "falta" sin alucinar; los
-// `matches` dan el detalle (puede haber candidatos sin un match confiable).
+// Resultado por cada nombre buscado en searchCompany.
+// - "exists": match confiable (sufijo legal ignorado, nombre normalizado).
+// - "possible": la búsqueda trajo candidato(s) parecidos pero NO idénticos
+//   (p.ej. "Clínica Porto Azul" → "Clínica Portoazul Auna"). El agente debe
+//   mostrarlos y pedir confirmación al usuario, no afirmar la equivalencia.
+// - "not_found": ni con búsqueda laxa apareció nada.
+// - "error": fallo de la consulta (p.ej. 429/403); nunca asumir existencia.
 export type CompanySearchResult = {
   query: string;
-  found: boolean;
+  status: "exists" | "possible" | "not_found" | "error";
   matches: Company[];
   error?: string;
 };
