@@ -100,12 +100,18 @@ export class HubSpotAdapter implements CrmAdapter {
   }
 
   // Verifica una lista de empresas contra el objeto Company de HubSpot (NO el
-  // campo de texto `company` del contacto). Busca todas en paralelo en un solo
-  // llamado del agente para no agotar el loop de iteraciones con N búsquedas.
+  // campo de texto `company` del contacto). Un solo llamado del agente cubre N
+  // empresas para no agotar el loop de iteraciones.
+  //
+  // ⚠️ El endpoint de SEARCH de HubSpot tiene un límite especial y bajo
+  // (~4-5 req/seg por cuenta). Disparar N búsquedas con un Promise.all hace que
+  // la mayoría rebote con 429 y se reporten como no verificadas. Por eso usamos
+  // concurrencia limitada (pool) + reintento con backoff ante 429.
   async searchCompany(names: string[]): Promise<CompanySearchResult[]> {
     const capped = (names || []).map((n) => n.trim()).filter(Boolean).slice(0, 25);
-    return Promise.all(
-      capped.map(async (name): Promise<CompanySearchResult> => {
+
+    const searchOne = async (name: string): Promise<CompanySearchResult> => {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await this.client.post("/crm/v3/objects/companies/search", {
             query: name,
@@ -120,13 +126,36 @@ export class HubSpotAdapter implements CrmAdapter {
           const found = companyMatches(name, matches.map((m) => m.name));
           return { query: name, found, matches };
         } catch (err: any) {
-          // No tumbamos todo el lote por un fallo puntual; reportamos el error
-          // de esa empresa y dejamos que el agente lo comunique.
+          const status = err?.response?.status;
+          // Reintentamos solo ante rate limit; respetamos Retry-After si viene.
+          if (status === 429 && attempt < 2) {
+            const retryAfter = Number(err?.response?.headers?.["retry-after"]) || attempt + 1;
+            await new Promise((r) => setTimeout(r, retryAfter * 1000));
+            continue;
+          }
           const msg = err?.response?.data?.message || err.message;
           return { query: name, found: false, matches: [], error: msg };
         }
-      })
+      }
+      return { query: name, found: false, matches: [], error: "rate limit (429) tras reintentos" };
+    };
+
+    // Pool de concurrencia: a lo más CONCURRENCY búsquedas en vuelo a la vez,
+    // preservando el orden de entrada en los resultados.
+    const CONCURRENCY = 3;
+    const results: CompanySearchResult[] = new Array(capped.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (true) {
+        const i = cursor++;
+        if (i >= capped.length) break;
+        results[i] = await searchOne(capped[i]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(CONCURRENCY, capped.length) }, worker)
     );
+    return results;
   }
 
   async createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact> {
