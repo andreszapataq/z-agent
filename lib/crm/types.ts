@@ -24,6 +24,22 @@ export type Deal = {
   companyId?: string;
 };
 
+export type Company = {
+  id: string;
+  name: string;
+  domain?: string;
+};
+
+// Resultado por cada nombre buscado en searchCompany. `found` es la señal
+// determinista para que el agente diga "existe" / "falta" sin alucinar; los
+// `matches` dan el detalle (puede haber candidatos sin un match confiable).
+export type CompanySearchResult = {
+  query: string;
+  found: boolean;
+  matches: Company[];
+  error?: string;
+};
+
 export type DealStage =
   | "saludo"
   | "presentación"
@@ -53,6 +69,7 @@ export type TaskItem = {
 
 export interface CrmAdapter {
   searchContact(query: string): Promise<Contact[]>;
+  searchCompany(names: string[]): Promise<CompanySearchResult[]>;
   createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact>;
   searchDeal(query: string): Promise<Deal[]>;
   createDeal(input: { contactId: string; name: string; amount?: number; stage?: DealStage }): Promise<Deal>;

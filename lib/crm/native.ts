@@ -1,6 +1,7 @@
 import { createAdminClient } from "../supabase";
-import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
+import { CrmAdapter, Company, CompanySearchResult, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
 import { normalizePhone } from "./phone";
+import { companyMatches } from "./match";
 
 const NATIVE_STAGE_LABELS: Array<{ slug: DealStage; label: string }> = [
   { slug: "saludo", label: "Nuevo contacto" },
@@ -35,6 +36,36 @@ export class NativeAdapter implements CrmAdapter {
       phone: c.phone,
       jobtitle: c.position,
     }));
+  }
+
+  // El CRM nativo no tiene un objeto Company; la empresa vive como campo de
+  // texto en `contacts.company`. Verificamos contra los valores distintos de
+  // esa columna — es la mejor señal disponible sin un objeto dedicado.
+  async searchCompany(names: string[]): Promise<CompanySearchResult[]> {
+    const capped = (names || []).map((n) => n.trim()).filter(Boolean).slice(0, 25);
+    return Promise.all(
+      capped.map(async (name): Promise<CompanySearchResult> => {
+        const { data, error } = await this.supabase
+          .from("contacts")
+          .select("company")
+          .eq("tenant_id", this.tenantId)
+          .ilike("company", `%${name}%`)
+          .limit(5);
+        if (error) return { query: name, found: false, matches: [], error: error.message };
+
+        const seen = new Set<string>();
+        const matches: Company[] = [];
+        for (const row of data || []) {
+          const c = (row as any).company as string | null;
+          if (c && !seen.has(c)) {
+            seen.add(c);
+            matches.push({ id: c, name: c });
+          }
+        }
+        const found = companyMatches(name, matches.map((m) => m.name));
+        return { query: name, found, matches };
+      })
+    );
   }
 
   async createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact> {

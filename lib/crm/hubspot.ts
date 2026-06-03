@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from "axios";
-import { CrmAdapter, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
+import { CrmAdapter, Company, CompanySearchResult, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
 import { normalizePhone } from "./phone";
+import { companyMatches } from "./match";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
 // con su propio mapeo via `tenant.stage_map`.
@@ -96,6 +97,36 @@ export class HubSpotAdapter implements CrmAdapter {
       phone: c.properties.phone,
       jobtitle: c.properties.jobtitle,
     }));
+  }
+
+  // Verifica una lista de empresas contra el objeto Company de HubSpot (NO el
+  // campo de texto `company` del contacto). Busca todas en paralelo en un solo
+  // llamado del agente para no agotar el loop de iteraciones con N búsquedas.
+  async searchCompany(names: string[]): Promise<CompanySearchResult[]> {
+    const capped = (names || []).map((n) => n.trim()).filter(Boolean).slice(0, 25);
+    return Promise.all(
+      capped.map(async (name): Promise<CompanySearchResult> => {
+        try {
+          const res = await this.client.post("/crm/v3/objects/companies/search", {
+            query: name,
+            properties: ["name", "domain"],
+            limit: 5,
+          });
+          const matches: Company[] = (res.data.results || []).map((c: any) => ({
+            id: c.id,
+            name: c.properties?.name || "(sin nombre)",
+            domain: c.properties?.domain,
+          }));
+          const found = companyMatches(name, matches.map((m) => m.name));
+          return { query: name, found, matches };
+        } catch (err: any) {
+          // No tumbamos todo el lote por un fallo puntual; reportamos el error
+          // de esa empresa y dejamos que el agente lo comunique.
+          const msg = err?.response?.data?.message || err.message;
+          return { query: name, found: false, matches: [], error: msg };
+        }
+      })
+    );
   }
 
   async createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact> {

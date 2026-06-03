@@ -49,9 +49,9 @@ Decision heuristic when adjusting behavior:
 
 1. **Is the desired behavior even possible with current code/tools/data?** If not → code change (layer 1), usually plus a layer-2 block telling the model how to use the new capability. (Example: conversation memory — no prompt wording can create memory the code doesn't pass in.)
 2. **Possible, but the agent does the wrong thing** → it's a prompt issue. Cross-tenant? → layer 2. Specific to one client (business/tone/policy)? → layer 3. (Example: "pendiente ≠ hoy" was a pure layer-2 fix; adding the `negociación` stage description was a layer-3 fix.)
-3. **After ANY code change, scan all prompt layers for statements that now contradict what the code does.** This step is easy to skip and bites hard: when conversation memory was added (code), `tenant.system_prompt` still said *"cada mensaje llega sin memoria… pide que repita el contacto"* — the stale prompt actively sabotaged the new capability until it was rewritten.
+3. **After ANY code change, scan all prompt layers for statements that now contradict what the code does — and especially after adding/changing a tool, check whether each `tenant.system_prompt` routes to it.** This step is easy to skip and bites hard. Two precedents: (a) when conversation memory was added (code), `tenant.system_prompt` still said *"cada mensaje llega sin memoria… pide que repita el contacto"* — the stale prompt actively sabotaged the new capability until it was rewritten; (b) when `searchCompany` was added (code), the QNA prompt's "CONSULTAS DE INFORMACIÓN" section still only mentioned `search_contact`/`search_deal`, so company-existence questions were routed to the wrong tool until the prompt was updated.
 
-⚠️ **Process caveat**: layer 3 lives only in the DB, not in git — fast to change (no deploy, per-client) but **unversioned**, no review, and prone to silently drifting from code reality. When editing a `tenant.system_prompt`, consider whether it should also be captured somewhere reviewable; as more tenants onboard, versioning/seeding tenant prompts becomes worthwhile.
+⚠️ **Process caveat & versioning**: layer 3 lives in the DB (fast, no deploy, per-client) but the DB is the **single live copy** — without a backup it's unreviewable and unrecoverable. Convention: each tenant's prompt has a **versioned snapshot in `prompts/<tenant-id>.md`** (e.g. [`prompts/qna-medical.md`](prompts/qna-medical.md)). The DB row stays the source of truth; the file is the reviewable git copy. **When you change a tenant prompt, edit both** — the `prompts/*.md` snapshot (in the PR) and the DB row (`UPDATE tenants SET system_prompt = … WHERE id = …`, effect immediate) — and bump the "Última sincronización" line in the snapshot. A future improvement is seeding prompts from these files at deploy; for now it's a manual two-step kept honest by this rule.
 
 ### Conversation memory (`lib/conversation.ts`)
 
@@ -67,10 +67,12 @@ Now `processMessage(userMessage, tenant, phone)` loads and reinjects recent turn
 
 ### CRM adapter pattern (`lib/crm/`)
 
-`CrmAdapter` interface in `types.ts` defines 9 action methods: `searchContact`, `createContact`, `searchDeal`, `createDeal`, `moveDeal`, `createNote`, `createTask`, `listTasks`, `completeTask` (plus `listStages` for pipeline labels). Two implementations exist:
+`CrmAdapter` interface in `types.ts` defines 10 action methods: `searchContact`, `searchCompany`, `createContact`, `searchDeal`, `createDeal`, `moveDeal`, `createNote`, `createTask`, `listTasks`, `completeTask` (plus `listStages` for pipeline labels). Two implementations exist:
 
 - **`HubSpotAdapter`** — calls HubSpot CRM v3 API with the tenant's `hubspot_token`. Stage names are resolved via per-tenant `tenant.stage_map` (Spanish → real HubSpot stageIds for that tenant's pipeline). Falls back to `DEFAULT_HUBSPOT_STAGE_MAP` (default HubSpot pipeline) if the tenant hasn't configured a map.
-- **`NativeAdapter`** — reads/writes directly to Supabase tables (`contacts`, `deals`, `notes`, `tasks`) scoped by `tenant_id`.
+- **`NativeAdapter`** — reads/writes directly to Supabase tables (`contacts`, `deals`, `notes`, `tasks`) scoped by `tenant_id`. Note: the native schema has no Company object — `searchCompany` checks distinct `contacts.company` text values, the best available signal.
+
+`searchCompany` takes a **list** of names and verifies them in parallel (one tool call covers N companies, so a "which of these exist?" question doesn't exhaust the 10-iteration loop). HubSpot hits the real Company object (`/crm/v3/objects/companies/search`); needs the `crm.objects.companies.read` scope on the tenant token or it 403s per company (handled gracefully — returns `error`, never a wrong `found`). Name matching is normalized (accents + legal suffixes like S.A.S. stripped) in `lib/crm/match.ts`.
 
 `lib/crm/index.ts` is the factory — `getCrmAdapter(tenant)` returns the right implementation. To add Salesforce or any new CRM: implement `CrmAdapter`, add the case in `index.ts`.
 

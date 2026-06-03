@@ -32,6 +32,25 @@ const TOOLS: ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "search_company",
+      description:
+        "Verifica si una o varias EMPRESAS (compañías/cuentas) ya existen en el CRM. Pasa TODOS los nombres en un solo llamado — la tool los busca en paralelo. Úsalo siempre que el usuario pregunte qué empresas existen, cuáles faltan por crear, o si una empresa está registrada. NO uses search_contact para esto: las empresas son un objeto distinto de los contactos. Cada resultado trae `found` (true/false) y los `matches` encontrados.",
+      parameters: {
+        type: "object",
+        properties: {
+          names: {
+            type: "array",
+            items: { type: "string" },
+            description: "Nombres de las empresas a verificar (uno o varios). Pásalos todos juntos en un solo llamado.",
+          },
+        },
+        required: ["names"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_contact",
       description: "Crea un nuevo contacto en el CRM. Úsalo cuando el usuario mencione una persona/empresa que no existe aún.",
       parameters: {
@@ -249,6 +268,12 @@ export async function processMessage(
     console.error("[listStages error]", e);
   }
 
+  const companiesContext =
+    `\n\n🏢 REGLA DE EMPRESAS: las empresas (compañías/cuentas) son un objeto DISTINTO de los contactos. Para verificar si una o varias empresas existen en el CRM ("¿qué empresas tenemos creadas?", "¿cuáles de estas faltan por crear?", "¿está registrada la empresa X?"), usa SIEMPRE \`search_company\`, NUNCA \`search_contact\`. Pasa TODOS los nombres en un solo llamado (la tool acepta una lista y los busca en paralelo). Para cada empresa, básate en el campo \`found\`: si es true ya existe; si es false repórtala como faltante por crear. No declares una empresa como existente o faltante sin que provenga del resultado de \`search_company\`.`;
+
+  const noHallucinationContext =
+    `\n\n🚫 REGLA ANTIALUCINACIÓN (CRÍTICA): NUNCA afirmes que un contacto, empresa, deal o tarea existe o NO existe en el CRM sin haberlo verificado con la tool correspondiente (\`search_company\`, \`search_contact\`, \`search_deal\`, \`list_tasks\`) en este mismo turno. Si el usuario pide ese tipo de verificación, primero llama la tool y responde SOLO con base en su resultado. Si no tienes una tool capaz de verificar lo que se pide, dilo explícitamente en vez de adivinar. JAMÁS devuelvas el listado que te dio el usuario como si fuera el resultado de una verificación.`;
+
   const notesContext =
     `\n\n📝 REGLA DE NOTAS: cuando muevas un deal con un motivo concreto (p.ej. "pidió documentos técnicos", "objetó el precio", "pidió tiempo para decidir"), inmediatamente después del \`move_deal\` llama \`create_note\` describiendo brevemente el motivo. Pasa SIEMPRE ambos identificadores cuando los tengas: \`deal_id\` (del deal que moviste) Y \`contact_id\` (del contacto asociado, que viene en search_deal/search_contact). Así el comercial ve la nota tanto en la timeline del deal como en la del contacto sin importar desde dónde llegue.`;
 
@@ -307,6 +332,8 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
         (tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`) +
         dateContext +
         stagesContext +
+        companiesContext +
+        noHallucinationContext +
         notesContext +
         tasksContext +
         listTasksContext +
@@ -372,6 +399,9 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
         switch (name) {
           case "search_contact":
             toolResult = JSON.stringify(await crm.searchContact(input.query));
+            break;
+          case "search_company":
+            toolResult = JSON.stringify(await crm.searchCompany(input.names || []));
             break;
           case "create_contact":
             toolResult = JSON.stringify(await crm.createContact(input));
