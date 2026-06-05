@@ -229,6 +229,32 @@ async function syncTenantEmails(tenant: Tenant): Promise<{ synced: number; deals
         deal_action: dealAction,
       },
     });
+
+    // Reenvío: este es un correo NUEVO (el dedup por email_id ya descartó los
+    // ya procesados) que cae sobre un deal PREEXISTENTE ("moved" o
+    // "already_at_stage"). El follow-up previo quedó atado a un envío anterior
+    // —típicamente uno que rebotó— así que lo marcamos como "resent" para que
+    // pollProposalNotifications vuelva a encolar UNA tarea fresca para este
+    // envío. Renombramos en vez de borrar para conservar la traza de auditoría;
+    // como pollProposalNotifications corre después en la misma corrida y su
+    // dedup solo mira action='proposal_followup_queued', el rename libera el
+    // re-encolado sin romper el dedup diario por deal_id. Para deals "created"
+    // no hay follow-up previo, así que se omite.
+    if (dealId && dealAction !== "created") {
+      const { error: rearmErr } = await supabase
+        .from("activity_log")
+        .update({ action: "proposal_followup_resent" })
+        .eq("tenant_id", tenant.id)
+        .eq("action", "proposal_followup_queued")
+        .filter("details->>deal_id", "eq", dealId);
+      if (rearmErr) {
+        console.error(
+          `[email-sync] no se pudo re-armar follow-up para deal ${dealId}:`,
+          rearmErr.message
+        );
+      }
+    }
+
     if (dealId) touched.push({ id: dealId, name: dealName || "tu propuesta" });
     synced++;
   }
