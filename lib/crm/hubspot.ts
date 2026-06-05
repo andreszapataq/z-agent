@@ -658,16 +658,26 @@ export class HubSpotAdapter implements CrmAdapter {
     // (`[ts]`) HubSpot la rechaza con INVALID_DATE ("Expected to be an epoch
     // timestamp"); un epoch suelto se castea bien al ser un único valor.
     // - Tarea/seguimiento normal: un solo recordatorio EN el due time.
-    // - Cita/reunión (isAppointment): dos recordatorios ANTES del due time
-    //   (1 día antes y 1 hora antes). Descartamos los que ya quedaron en el
-    //   pasado; si ambos quedaran en el pasado caemos al due time para no dejar
-    //   la cita sin ningún aviso. Requiere owner para que dispare (igual que el
-    //   recordatorio único).
+    // - Cita/reunión (isAppointment): dos recordatorios ANTES del due time:
+    //     1) la VÍSPERA a las 19:00 Bogotá (no "24h antes" fijo: anclar a una
+    //        hora útil del día calendario anterior asegura que una cita agendada
+    //        el día previo igual reciba un aviso la noche anterior, en vez de uno
+    //        a la misma hora del día anterior que casi siempre ya pasó).
+    //     2) 1 hora antes.
+    //   Descartamos los que ya quedaron en el pasado; si ambos quedaran en el
+    //   pasado caemos al due time para no dejar la cita sin ningún aviso.
+    //   Requiere owner para que dispare (igual que el recordatorio único).
+    // Bogotá es UTC-5 sin horario de verano, así que -05:00 es constante y la
+    // aritmética de epochs desde la medianoche del día de la cita es exacta.
     const DAY_MS = 24 * 60 * 60 * 1000;
     const HOUR_MS = 60 * 60 * 1000;
     let reminderTimes: number[];
     if (input.isAppointment) {
-      const before = [dueTs - DAY_MS, dueTs - HOUR_MS].filter((ts) => ts > Date.now());
+      const eveBefore = /^\d{4}-\d{2}-\d{2}$/.test(dueDate)
+        ? new Date(`${dueDate}T00:00:00-05:00`).getTime() - DAY_MS + 19 * HOUR_MS
+        : dueTs - DAY_MS; // fallback si la fecha no viene como YYYY-MM-DD
+      const oneHourBefore = dueTs - HOUR_MS;
+      const before = [eveBefore, oneHourBefore].filter((ts) => ts > Date.now());
       reminderTimes = before.length ? before : [dueTs];
     } else {
       reminderTimes = [dueTs];
