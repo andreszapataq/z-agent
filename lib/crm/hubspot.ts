@@ -584,6 +584,7 @@ export class HubSpotAdapter implements CrmAdapter {
     dueDate: string;
     dueTime?: string;
     priority?: TaskPriority;
+    isAppointment?: boolean;
   }): Promise<string> {
     const { contactId, dealId, title, dueDate, dueTime } = input;
     // Default MEDIUM: la mayoría de seguimientos comerciales lo son, y mantener
@@ -651,10 +652,27 @@ export class HubSpotAdapter implements CrmAdapter {
       );
     }
 
-    // hs_task_reminders espera un epoch ms CRUDO (p.ej. 1780408800000). La forma
-    // de array (`[ts]`) que usábamos antes ahora HubSpot la rechaza con
-    // INVALID_DATE ("Expected to be an epoch timestamp"). Un solo recordatorio
-    // en el due time basta para que dispare la notificación.
+    // hs_task_reminders es una propiedad enumeration MULTIVALOR ("The dates when
+    // reminders will be sent"). Se serializa como string de epochs ms separados
+    // por ";" (p.ej. "1780322400000;1780405200000"). La forma de array JSON
+    // (`[ts]`) HubSpot la rechaza con INVALID_DATE ("Expected to be an epoch
+    // timestamp"); un epoch suelto se castea bien al ser un único valor.
+    // - Tarea/seguimiento normal: un solo recordatorio EN el due time.
+    // - Cita/reunión (isAppointment): dos recordatorios ANTES del due time
+    //   (1 día antes y 1 hora antes). Descartamos los que ya quedaron en el
+    //   pasado; si ambos quedaran en el pasado caemos al due time para no dejar
+    //   la cita sin ningún aviso. Requiere owner para que dispare (igual que el
+    //   recordatorio único).
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const HOUR_MS = 60 * 60 * 1000;
+    let reminderTimes: number[];
+    if (input.isAppointment) {
+      const before = [dueTs - DAY_MS, dueTs - HOUR_MS].filter((ts) => ts > Date.now());
+      reminderTimes = before.length ? before : [dueTs];
+    } else {
+      reminderTimes = [dueTs];
+    }
+    const remindersValue = reminderTimes.join(";");
     try {
       await this.client.post("/crm/v3/objects/tasks", {
         properties: {
@@ -663,7 +681,7 @@ export class HubSpotAdapter implements CrmAdapter {
           hs_task_priority: hsPriority,
           hs_task_type: "TODO",
           hs_timestamp: dueTs,
-          hs_task_reminders: dueTs,
+          hs_task_reminders: remindersValue,
           // HubSpot solo dispara la notificación del recordatorio si la tarea tiene owner.
           ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
         },

@@ -174,9 +174,11 @@ export class NativeAdapter implements CrmAdapter {
     dueDate: string;
     dueTime?: string;
     priority?: TaskPriority;
+    isAppointment?: boolean;
   }): Promise<string> {
-    // La tabla `tasks` nativa no tiene columna de prioridad todavía; aceptamos
-    // el parámetro para cumplir la interfaz y lo ignoramos.
+    // La tabla `tasks` nativa no tiene columnas de prioridad ni de recordatorios
+    // todavía; aceptamos `priority` e `isAppointment` para cumplir la interfaz y
+    // los ignoramos (sin sistema de recordatorios nativo no hay nada que disparar).
     const { error } = await this.supabase.from("tasks").insert({
       tenant_id: this.tenantId,
       contact_id: input.contactId || null,

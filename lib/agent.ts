@@ -167,6 +167,10 @@ const TOOLS: ChatCompletionTool[] = [
             enum: ["baja", "media", "alta"],
             description: "Prioridad de la tarea. OMÍTELA por defecto (el sistema usa 'media'). SOLO pásala si el usuario indica EXPLÍCITAMENTE la urgencia ('prioridad alta', 'urgente', 'esto corre', 'baja prioridad', 'cuando puedas'). NO la infieras del tono ni del contexto por tu cuenta.",
           },
+          is_appointment: {
+            type: "boolean",
+            description: "Ponlo en true SOLO cuando la tarea sea una CITA, REUNIÓN o VISITA con hora específica (ej. 'cita con el cliente mañana a las 3pm'). Activa DOS recordatorios automáticos antes del evento: uno 1 día antes y otro 1 hora antes. Requiere due_time. Para tareas/seguimientos normales ('llamar a Juan', 'enviar cotización') OMÍTELO — esas llevan un solo recordatorio al vencimiento.",
+          },
         },
         required: ["title", "due_date"],
       },
@@ -285,6 +289,9 @@ Nunca declares el estado de una empresa sin que provenga del resultado de \`sear
   const tasksContext =
     `\n\n✅ REGLA DE TAREAS: cuando el usuario pida una tarea relacionada con un negocio/deal/propuesta/cuenta, SIEMPRE llama primero \`search_deal\` para obtener el \`deal_id\` y pásalo como \`deal_id\` en \`create_task\`. NO uses \`contact_id\` solo en este caso: pasar \`deal_id\` enlaza la tarea al deal + sus contactos + su empresa y la asigna al comercial dueño del deal automáticamente. Solo usa \`contact_id\` sin \`deal_id\` cuando la tarea sea explícitamente sobre una persona sin deal abierto (p.ej. "llamar a Juan el viernes" sin mencionar negocio).`;
 
+  const appointmentContext =
+    `\n\n📅 REGLA DE CITAS/REUNIONES: cuando el usuario agende una CITA, REUNIÓN, VISITA o evento con HORA (p.ej. "agéndame la cita con el Dr. X mañana a las 3pm", "tenemos reunión el jueves a las 10am"), llama \`create_task\` con \`is_appointment: true\` y SIEMPRE incluye \`due_time\` con la hora del evento. Eso hace que el sistema cree automáticamente DOS recordatorios ANTES de la cita: uno 1 día antes y otro 1 hora antes (no hace falta que el usuario los pida). Resuelve la fecha con la sección 📅 FECHA ACTUAL. Si el usuario pide una cita pero NO da hora, pregúntale la hora antes de crearla (una cita sin hora no puede tener un recordatorio "1 hora antes"). NO uses \`is_appointment\` en tareas/seguimientos normales ("llamar a Juan", "enviar cotización"): esas llevan un único recordatorio al vencimiento.`;
+
   const completeTaskContext =
     `\n\n☑️ REGLA DE COMPLETAR TAREAS: cuando el usuario diga que ya hizo algo ("ya llamé", "mandé la cotización", "reunión hecha", "listo lo del cliente X"):
 1. Llama \`list_tasks\` para localizar la tarea. Usa por defecto un rango amplio (from_date = fecha actual − 30 días, to_date = fecha actual + 30 días) para cubrir tareas VENCIDAS y también futuras (el usuario pudo adelantarse). Solo restringe el rango si el usuario dio una pista temporal clara.
@@ -341,6 +348,7 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
         noHallucinationContext +
         notesContext +
         tasksContext +
+        appointmentContext +
         listTasksContext +
         completeTaskContext +
         recentTasksContext,
@@ -442,6 +450,7 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
               dueDate: input.due_date,
               dueTime: input.due_time,
               priority: input.priority,
+              isAppointment: input.is_appointment,
             });
             break;
           case "complete_task":

@@ -86,6 +86,7 @@ export interface CrmAdapter {
     dueDate: string;
     dueTime?: string;
     priority?: TaskPriority;
+    isAppointment?: boolean;
   }): Promise<string>;
   listTasks(input: {
     fromDate: string;
