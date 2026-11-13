@@ -240,7 +240,7 @@ const COMPANY_SUFFIX_RE = /[\s,]*\b(?:s\.?\s?a\.?\s?s\.?|s\.?\s?a\.?|ltda\.?)(?=
 
 export function cleanCompanyName(raw: string): string {
   let s = String(raw || "").replace(/\s+/g, " ").trim();
-  s = s.replace(COMPANY_SUFFIX_RE, "").replace(/\s+/g, " ").replace(/[\s,.-]+$/, "").trim();
+  s = s.replace(COMPANY_SUFFIX_RE, "").replace(/\s+/g, " ").replace(/[\s,-]+$/, "").trim();
   // Sedes: «Marca Sede», sin guion ni raya.
   s = s.replace(/\s+[-–—]\s+/g, " ");
   if (!s) throw new ValidationError("El nombre de la empresa está vacío.");

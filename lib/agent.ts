@@ -325,7 +325,7 @@ export async function processMessage(
   const { text: userMessage, images = [] } = typeof input === "string" ? { text: input } : input;
   const crm = getCrmAdapter(tenant);
 
-  // The OpenAI model has no notion of the current date, so it tends to
+  // The model has no notion of the current date, so it tends to
   // anchor relative dates ("el viernes", "mañana", "la próxima semana") to
   // its training cutoff and produces wildly past `due_date` values.
   // Anchoring to America/Bogota matches the operating timezone of QNA
@@ -372,7 +372,7 @@ Nunca declares el estado de una empresa sin que provenga del resultado de \`sear
 - Todo contacto nuevo va asociado a su empresa: obtén el \`company_id\` con \`search_company\` (si la institución tiene sede en la ciudad del contacto, usa la sede). Si la empresa no existe, pregúntale al usuario si la creas con \`create_company\`.
 - \`create_contact\` y \`create_company\` pueden responder \`possible_duplicate\`: en ese caso NO se creó nada. Muestra los registros parecidos y pregunta. Solo reintenta con \`allow_duplicate: true\` si el usuario confirma que es otro.
 - Si una tool responde con un error de validación (teléfono incompleto, especialidad inválida, falta la empresa), no inventes el dato: pídeselo al usuario.
-- Cuando el usuario envía un contacto compartido (📇), una nota de voz transcrita (🎤) o una foto (📷), extrae los datos, muéstrale cómo quedaría el registro y espera su confirmación antes de crear. En las fotos de tarjetas, lee con cuidado nombres y números; si algo no se ve claro, pregúntalo. Si una nota de voz trae nombres que suenan raros, confírmalos.`;
+- Cuando el usuario envía un contacto compartido (📇) o una foto (📷), extrae los datos, muéstrale cómo quedaría el registro y espera su confirmación antes de crear. En las fotos de tarjetas, lee con cuidado nombres y números; si algo no se ve claro, pregúntalo. Si el texto parece dictado por voz y trae nombres que suenan raros, confírmalos.`;
 
   const noHallucinationContext =
     `\n\n🚫 REGLA ANTIALUCINACIÓN (CRÍTICA): NUNCA afirmes que un contacto, empresa, deal o tarea existe o NO existe en el CRM sin haberlo verificado con la tool correspondiente (\`search_company\`, \`search_contact\`, \`search_deal\`, \`list_tasks\`) en este mismo turno. Si el usuario pide ese tipo de verificación, primero llama la tool y responde SOLO con base en su resultado. Si no tienes una tool capaz de verificar lo que se pide, dilo explícitamente en vez de adivinar. JAMÁS devuelvas el listado que te dio el usuario como si fuera el resultado de una verificación.`;

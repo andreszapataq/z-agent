@@ -9,29 +9,30 @@ npm run dev      # Start dev server (http://localhost:3000 → redirects to /adm
 npm run build    # Production build
 npm run start    # Run production build locally
 npm run lint     # ESLint
+npm test         # Unit tests (node:test + tsx) for contact rules, inbound parsing and the WhatsApp channel
 ```
-
-There are no tests in this project.
 
 ## Architecture
 
-Z-Agent is a **multi-tenant WhatsApp AI agent** that connects Meta WhatsApp Business API to CRMs. Each tenant (client company) has its own WhatsApp credentials, CRM type, and OpenAI system prompt.
+Z-Agent is a **multi-tenant WhatsApp AI agent** that connects the WhatsApp Business API (Meta directly or through Kapso) to CRMs. Each tenant (client company) has its own WhatsApp channel and credentials, CRM type, and system prompt. The model is Claude (Anthropic API).
 
 ### Message flow
 
 ```
-WhatsApp user → Meta API → POST /api/webhook
+WhatsApp user → Meta API (directo, o Kapso reenviando el payload de Meta) → POST /api/webhook
+  → firstTimeSeen()           (dedupe por message.id; Meta y Kapso reintentan)
   → getTenantByPhone()        (match phone_number_id to tenant)
-  → processMessage()          (OpenAI agent loop in lib/agent.ts)
+  → toAgentInput()            (lib/inbound.ts: texto, contacto compartido, foto; nota de voz → pide dictado)
+  → processMessage()          (Claude agent loop in lib/agent.ts)
   → CrmAdapter methods        (HubSpot or native Supabase)
-  → sendWhatsAppMessage()     (reply back via Meta API)
+  → sendWhatsAppMessage()     (reply via Meta Graph API or Kapso proxy, per tenant.whatsapp_provider)
 ```
 
 The webhook responds 200 immediately and processes async (`processIncomingMessage` is fire-and-forget). Only messages from `tenant.owner_number` are processed — one authorized phone per tenant.
 
 ### Agent loop (`lib/agent.ts`)
 
-Runs up to 10 OpenAI iterations using `openai.chat.completions.create` with `tools`. Each iteration either returns a final text response (no `tool_calls`) or executes one or more tool calls. Tool results are pushed to the messages array as `role: "tool"` and fed back. The model defaults to `gpt-4.1-mini` (override via `OPENAI_MODEL`). Recent conversation turns are reinjected (see [Conversation memory](#conversation-memory-libconversationts)). All iterations are logged to the `activity_log` table.
+Runs up to 10 Claude iterations using `anthropic.messages.create` with `tools`. Each iteration either ends with a final text response (`stop_reason !== "tool_use"`) or executes one or more `tool_use` blocks, whose results go back as `tool_result` blocks in a user turn. The model defaults to `claude-sonnet-5-5` (override via `AGENT_MODEL`). The system prompt is sent as two blocks: a stable one (tenant prompt + code rules) marked with `cache_control` so it is billed at cache-read price, and a dynamic one (date, recent tasks). Images (business cards) are passed as base64 image blocks. Token usage per turn is logged as `activity_log.action = "model_usage"`. Recent conversation turns are reinjected (see [Conversation memory](#conversation-memory-libconversationts)). All iterations are logged to the `activity_log` table.
 
 ### Where the agent's instructions live (and when to touch each)
 
@@ -55,7 +56,7 @@ Decision heuristic when adjusting behavior:
 
 ### Conversation memory (`lib/conversation.ts`)
 
-Each incoming WhatsApp message used to start a fresh OpenAI context, which broke any multi-turn flow: when the agent asked "¿Confirmas que marque la tarea?" and the user replied "Sí", the next message had no idea which task — and the model would hallucinate a `task_id` (e.g. `"1"`), causing a 404 on `complete_task`.
+Each incoming WhatsApp message used to start a fresh model context, which broke any multi-turn flow: when the agent asked "¿Confirmas que marque la tarea?" and the user replied "Sí", the next message had no idea which task — and the model would hallucinate a `task_id` (e.g. `"1"`), causing a 404 on `complete_task`.
 
 Now `processMessage(userMessage, tenant, phone)` loads and reinjects recent turns:
 
@@ -137,8 +138,9 @@ The source of truth for schema is `supabase/migrations/` (versioned). `supabase/
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase anon key (used by client SDK init in some contexts) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key (bypasses RLS) |
-| `OPENAI_API_KEY` | OpenAI API key |
-| `OPENAI_MODEL` | (optional) Override model name. Default: `gpt-4.1-mini` |
+| `ANTHROPIC_API_KEY` | Anthropic API key (Claude) |
+| `AGENT_MODEL` | (optional) Override model name. Default: `claude-sonnet-5-5` |
+| `KAPSO_WEBHOOK_SECRET` | Secret set on the Kapso webhook (kind `meta`); verifies `x-webhook-signature` (hex HMAC-SHA256) |
 | `WEBHOOK_VERIFY_TOKEN` | Token Meta uses to verify the webhook on setup |
 | `META_APP_SECRET` | Meta App Secret — used to verify HMAC signature on incoming webhook POSTs |
 | `ADMIN_SECRET` | Shared password for the admin panel |
@@ -149,7 +151,10 @@ The source of truth for schema is `supabase/migrations/` (versioned). `supabase/
 ## Key constraints
 
 - **WhatsApp API version**: pinned via `GRAPH_API_VERSION` constant in `lib/whatsapp.ts` (currently `v22.0`) — bump when upgrading the Meta API version.
-- **Webhook signature**: incoming POSTs to `/api/webhook` are verified against `META_APP_SECRET` using HMAC-SHA256 (`verifyMetaSignature` in `lib/whatsapp.ts`). Requests without a valid `x-hub-signature-256` header return 403.
+- **Webhook signature**: incoming POSTs to `/api/webhook` are verified either as Kapso (`x-webhook-signature`, hex HMAC-SHA256 with `KAPSO_WEBHOOK_SECRET`) or as Meta (`x-hub-signature-256`, `sha256=` + HMAC with `META_APP_SECRET`). Invalid or missing signatures return 403.
+- **WhatsApp channel**: `tenant.whatsapp_provider` = `meta` (Graph API, Bearer token) or `kapso` (`https://app.kapso.ai/api/meta/{v}`, `X-API-Key`). `whatsapp_token` holds the Meta token or the Kapso project API key. Same request bodies either way (`lib/whatsapp.ts`).
+- **Contact/company write rules** live in `lib/crm/contact-rules.ts` (phones → Móvil/Teléfono in +57 format, 7-digit landlines rejected, names, cities, especialidad list, company names). `createContact`/`createCompany` return `possible_duplicate` instead of creating when a likely duplicate exists; the agent must ask the user and retry with `allow_duplicate`.
+- **Voice notes are not transcribed** (Claude has no audio input and the project uses no other AI provider): the agent asks the user to dictate with the keyboard microphone.
 - **Agent tool set**: tools are defined statically in `TOOLS` array in `lib/agent.ts`. Adding a new CRM action requires adding both a tool definition there and a case in the switch.
 - **Conversation memory**: recent textual turns (last 12 / 6h) are reinjected per conversation — see [Conversation memory](#conversation-memory-libconversationts). Intermediate `tool_calls` are not stored; real `task_id`s are carried forward via `metadata.tasks` so confirmations ("Sí") complete deterministically.
 - **`maxDuration = 60`** on the webhook route — if the agent loop takes longer (e.g. many tool calls), Vercel will cut it off. Admin endpoints have `maxDuration = 30`.

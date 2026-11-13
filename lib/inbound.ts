@@ -1,11 +1,10 @@
 import { WhatsAppCreds, downloadMedia } from "./whatsapp";
-import { transcribeAudio } from "./transcribe";
 
 // ============================================================
 // Mensajes entrantes → entrada del agente
 // ============================================================
-// El comercial no solo escribe: reenvía contactos de WhatsApp, manda notas de
-// voz y fotos de tarjetas. Aquí convertimos cada tipo de mensaje de la Cloud
+// El comercial no solo escribe: reenvía contactos de WhatsApp y manda fotos
+// de tarjetas. Las notas de voz se responden pidiendo dictado por teclado. Aquí convertimos cada tipo de mensaje de la Cloud
 // API (mismo formato con Meta directo o con Kapso) en una entrada uniforme
 // para el agente: texto + imágenes opcionales.
 
@@ -26,7 +25,10 @@ const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 export const UNSUPPORTED_REPLY =
-  "Por ahora puedo leer mensajes de texto, notas de voz, fotos (por ejemplo de tarjetas) y contactos compartidos. ¿Me lo puedes enviar de alguna de esas formas?";
+  "Por ahora puedo leer mensajes de texto, fotos (por ejemplo de tarjetas) y contactos compartidos. ¿Me lo puedes enviar de alguna de esas formas?";
+
+export const VOICE_NOTE_REPLY =
+  "Todavía no puedo escuchar notas de voz 🙉. Para hablarme, usa el micrófono del teclado (el de dictado, no el de WhatsApp): tu voz queda escrita y me llega como texto.";
 
 export async function toAgentInput(message: any, creds: WhatsAppCreds): Promise<InboundResult> {
   switch (message?.type) {
@@ -41,19 +43,10 @@ export async function toAgentInput(message: any, creds: WhatsAppCreds): Promise<
     }
 
     case "audio": {
-      const id = message.audio?.id;
-      if (!id) return { ok: false, reply: UNSUPPORTED_REPLY };
-      try {
-        const { data, mimeType } = await downloadMedia(creds, id);
-        const transcript = (await transcribeAudio(data, mimeType)).trim();
-        if (!transcript) {
-          return { ok: false, reply: "No logré entender la nota de voz. ¿Me la repites o me lo escribes?" };
-        }
-        return { ok: true, input: { text: `🎤 Nota de voz (transcrita automáticamente): «${transcript}»` } };
-      } catch (e: any) {
-        console.error("[inbound] audio:", e?.response?.status || e?.message);
-        return { ok: false, reply: "No pude procesar la nota de voz. ¿Me lo puedes escribir?" };
-      }
+      // La API de Claude no recibe audio y no usamos otro proveedor para
+      // transcribir: pedimos dictar con el micrófono del teclado, que entrega
+      // el texto ya escrito.
+      return { ok: false, reply: VOICE_NOTE_REPLY };
     }
 
     case "image": {
