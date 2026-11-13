@@ -179,3 +179,5 @@ npm run build    # Build de producción
 npm run start    # Correr build local
 npm run lint     # Linter
 ```
+
+Despliegue de Claude + Kapso: 13-nov-2026
