@@ -1,6 +1,33 @@
 import axios, { AxiosInstance } from "axios";
-import { CrmAdapter, Company, CompanySearchResult, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
-import { normalizePhone } from "./phone";
+import {
+  CrmAdapter,
+  Company,
+  CompanyInput,
+  CompanySearchResult,
+  Contact,
+  ContactInput,
+  ContactUpdate,
+  CreateCompanyResult,
+  CreateContactResult,
+  Deal,
+  DealStage,
+  StageInfo,
+  TaskItem,
+  TaskPriority,
+} from "./types";
+import {
+  ValidationError,
+  cleanCompanyName,
+  cleanPersonName,
+  normalizeCity,
+  normalizeDomain,
+  normalizeEmail,
+  normalizeEspecialidad,
+  normalizeForMatch,
+  parsePhone,
+  phoneSearchKey,
+  routePhones,
+} from "./contact-rules";
 import { companyMatches, stripLegalSuffix } from "./match";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
@@ -13,6 +40,19 @@ export const DEFAULT_HUBSPOT_STAGE_MAP: Record<DealStage, string> = {
   cierre: "closedwon",
   perdido: "closedlost",
 };
+
+const CONTACT_PROPS = [
+  "firstname",
+  "lastname",
+  "email",
+  "company",
+  "phone",
+  "mobilephone",
+  "jobtitle",
+  "especialidad",
+  "city",
+  "associatedcompanyid",
+];
 
 // Cache in-memory de pipelines por token. TTL corto porque corre en serverless
 // (cada instancia warm reaprovecha; cold start refetchea). Evita pegarle a
@@ -82,21 +122,97 @@ export class HubSpotAdapter implements CrmAdapter {
   }
 
   async searchContact(query: string): Promise<Contact[]> {
-    // Top-level `query` searches firstname/lastname/email/company together; a single-property filterGroup missed name matches.
-    const res = await this.client.post("/crm/v3/objects/contacts/search", {
-      query,
-      properties: ["firstname", "lastname", "email", "company", "phone", "jobtitle"],
-      limit: 5,
-    });
+    // Si el texto es un número, buscamos exacto en Móvil y Teléfono (el
+    // `query` libre de HubSpot no encuentra "+573101234567" buscando
+    // "310 123 4567"). Si no, `query` busca nombre/apellido/correo/empresa.
+    const phoneKey = phoneSearchKey(query);
+    const body = phoneKey
+      ? {
+          filterGroups: [
+            { filters: [{ propertyName: "mobilephone", operator: "EQ", value: phoneKey }] },
+            { filters: [{ propertyName: "phone", operator: "EQ", value: phoneKey }] },
+          ],
+          properties: CONTACT_PROPS,
+          limit: 5,
+        }
+      : { query, properties: CONTACT_PROPS, limit: 5 };
+    let res = await this.searchWithRetry("/crm/v3/objects/contacts/search", body);
+    // Fijos con extensión ("+576044446152 ext. 2166") no salen con EQ: segundo
+    // intento con la búsqueda libre por los dígitos.
+    if (phoneKey && (res.data.results || []).length === 0) {
+      res = await this.searchWithRetry("/crm/v3/objects/contacts/search", {
+        query: phoneKey.replace("+", ""),
+        properties: CONTACT_PROPS,
+        limit: 5,
+      });
+    }
+    return this.toContacts(res.data.results || []);
+  }
 
-    return (res.data.results || []).map((c: any) => ({
-      id: c.id,
-      name: `${c.properties.firstname || ""} ${c.properties.lastname || ""}`.trim() || "(sin nombre)",
-      company: c.properties.company,
-      email: c.properties.email,
-      phone: c.properties.phone,
-      jobtitle: c.properties.jobtitle,
-    }));
+  // Convierte resultados crudos de HubSpot en Contact, resolviendo el nombre de
+  // la empresa principal asociada (objeto Empresa, no el texto `company`).
+  private async toContacts(raw: any[]): Promise<Contact[]> {
+    const companyIds = Array.from(
+      new Set(raw.map((c) => c.properties?.associatedcompanyid).filter(Boolean))
+    ) as string[];
+    const companies = await this.readCompanies(companyIds);
+    return raw.map((c) => {
+      const p = c.properties || {};
+      const comp = p.associatedcompanyid ? companies.get(p.associatedcompanyid) : undefined;
+      return {
+        id: c.id,
+        name: `${p.firstname || ""} ${p.lastname || ""}`.trim() || "(sin nombre)",
+        firstname: p.firstname || undefined,
+        lastname: p.lastname || undefined,
+        company: comp?.name || p.company || undefined,
+        companyId: p.associatedcompanyid || undefined,
+        email: p.email || undefined,
+        mobile: p.mobilephone || undefined,
+        phone: p.phone || undefined,
+        jobtitle: p.jobtitle || undefined,
+        especialidad: p.especialidad || undefined,
+        city: p.city || comp?.city || undefined,
+      };
+    });
+  }
+
+  private async readCompanies(ids: string[]): Promise<Map<string, Company>> {
+    const out = new Map<string, Company>();
+    if (ids.length === 0) return out;
+    try {
+      const res = await this.client.post("/crm/v3/objects/companies/batch/read", {
+        properties: ["name", "city", "domain"],
+        inputs: ids.slice(0, 100).map((id) => ({ id })),
+      });
+      for (const c of res.data.results || []) {
+        out.set(c.id, {
+          id: c.id,
+          name: c.properties?.name || "(sin nombre)",
+          city: c.properties?.city || undefined,
+          domain: c.properties?.domain || undefined,
+        });
+      }
+    } catch (e: any) {
+      console.warn("[hubspot] batch read de empresas falló:", e?.response?.status || e?.message);
+    }
+    return out;
+  }
+
+  // POST a un endpoint de search con reintento ante 429 (límite bajo de HubSpot).
+  private async searchWithRetry(path: string, body: any) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await this.client.post(path, body);
+      } catch (err: any) {
+        if (err?.response?.status === 429 && attempt < 2) {
+          const retryAfter = Number(err?.response?.headers?.["retry-after"]) || attempt + 1;
+          await new Promise((r) => setTimeout(r, retryAfter * 1000));
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error("rate limit (429) tras reintentos");
   }
 
   // Verifica una lista de empresas contra el objeto Company de HubSpot (NO el
@@ -117,13 +233,14 @@ export class HubSpotAdapter implements CrmAdapter {
         try {
           const res = await this.client.post("/crm/v3/objects/companies/search", {
             query,
-            properties: ["name", "domain"],
+            properties: ["name", "domain", "city"],
             limit: 5,
           });
           return (res.data.results || []).map((c: any) => ({
             id: c.id,
             name: c.properties?.name || "(sin nombre)",
             domain: c.properties?.domain,
+            city: c.properties?.city || undefined,
           }));
         } catch (err: any) {
           const status = err?.response?.status;
@@ -189,30 +306,184 @@ export class HubSpotAdapter implements CrmAdapter {
     return results;
   }
 
-  async createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact> {
-    const [firstname, ...rest] = input.name.split(" ");
-    const lastname = rest.join(" ");
-    const phone = normalizePhone(input.phone);
+  // Busca contactos que probablemente sean la misma persona: mismo correo,
+  // mismo celular, o mismo nombre completo (con apellido, o sin apellido pero
+  // en la misma empresa, como los contactos de área).
+  private async findPossibleDuplicates(input: {
+    firstname: string;
+    lastname?: string;
+    email?: string;
+    mobilephone?: string;
+    companyId?: string;
+  }): Promise<Contact[]> {
+    const groups: any[] = [];
+    if (input.email) groups.push({ filters: [{ propertyName: "email", operator: "EQ", value: input.email }] });
+    if (input.mobilephone)
+      groups.push({ filters: [{ propertyName: "mobilephone", operator: "EQ", value: input.mobilephone }] });
 
-    const res = await this.client.post("/crm/v3/objects/contacts", {
-      properties: {
+    const found = new Map<string, any>();
+    if (groups.length) {
+      const res = await this.searchWithRetry("/crm/v3/objects/contacts/search", {
+        filterGroups: groups,
+        properties: CONTACT_PROPS,
+        limit: 5,
+      });
+      for (const c of res.data.results || []) found.set(c.id, c);
+    }
+
+    const fullName = normalizeForMatch(`${input.firstname} ${input.lastname || ""}`);
+    if (fullName) {
+      const res = await this.searchWithRetry("/crm/v3/objects/contacts/search", {
+        query: `${input.firstname} ${input.lastname || ""}`.trim(),
+        properties: CONTACT_PROPS,
+        limit: 10,
+      });
+      for (const c of res.data.results || []) {
+        const p = c.properties || {};
+        const same = normalizeForMatch(`${p.firstname || ""} ${p.lastname || ""}`) === fullName;
+        const sameCompany = !!input.companyId && p.associatedcompanyid === input.companyId;
+        if (same && (input.lastname || sameCompany)) found.set(c.id, c);
+      }
+    }
+    return this.toContacts(Array.from(found.values()).slice(0, 5));
+  }
+
+  async createContact(input: ContactInput): Promise<CreateContactResult> {
+    const firstname = cleanPersonName(input.firstname);
+    if (!firstname) throw new ValidationError("Falta el nombre del contacto.");
+    const lastname = cleanPersonName(input.lastname);
+    const email = normalizeEmail(input.email);
+    const phones = routePhones({ mobile: input.mobile, phone: input.phone });
+    const especialidad = normalizeEspecialidad(input.especialidad);
+    const city = normalizeCity(input.city);
+    const jobtitle = input.jobtitle?.replace(/\s+/g, " ").trim() || undefined;
+
+    if (!input.companyId && !input.withoutCompany) {
+      throw new ValidationError(
+        "Falta company_id. Todo contacto va asociado a su empresa (o a la sede): búscala con search_company y pasa su id. Si no existe, pregúntale al usuario si la creas con create_company. Solo si el usuario confirma que no tiene empresa, usa without_company: true."
+      );
+    }
+
+    if (!input.allowDuplicate) {
+      const matches = await this.findPossibleDuplicates({
         firstname,
         lastname,
-        company: input.company,
-        email: input.email,
-        phone,
-        jobtitle: input.jobtitle,
-      },
-    });
+        email,
+        mobilephone: phones.mobilephone,
+        companyId: input.companyId,
+      });
+      if (matches.length > 0) {
+        return {
+          status: "possible_duplicate",
+          matches,
+          message:
+            "NO se creó: ya existe(n) contacto(s) con el mismo correo, celular o nombre. Muéstraselos al usuario y pregunta si es la misma persona. Si lo es, actualiza ese contacto con update_contact. Solo si confirma que es otra persona, vuelve a llamar create_contact con allow_duplicate: true.",
+        };
+      }
+    }
 
-    return {
-      id: res.data.id,
-      name: input.name,
-      company: input.company,
-      email: input.email,
-      phone,
-      jobtitle: input.jobtitle,
-    };
+    const properties: Record<string, string> = { firstname, lifecyclestage: "lead" };
+    if (lastname) properties.lastname = lastname;
+    if (email) properties.email = email;
+    if (phones.mobilephone) properties.mobilephone = phones.mobilephone;
+    if (phones.phone) properties.phone = phones.phone;
+    if (jobtitle) properties.jobtitle = jobtitle;
+    if (especialidad) properties.especialidad = especialidad;
+    if (city) properties.city = city;
+    if (this.ownerId) properties.hubspot_owner_id = this.ownerId;
+
+    const associations = input.companyId
+      ? [
+          {
+            to: { id: input.companyId },
+            // 1 = contact → company, empresa principal (HUBSPOT_DEFINED)
+            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 1 }],
+          },
+        ]
+      : [];
+
+    const res = await this.client.post("/crm/v3/objects/contacts", { properties, associations });
+    const [contact] = await this.toContacts([{ id: res.data.id, properties: { ...properties, associatedcompanyid: input.companyId } }]);
+    return { status: "created", contact };
+  }
+
+  async updateContact(contactId: string, input: ContactUpdate): Promise<Contact> {
+    // Solo se escriben los campos que vienen con valor: nunca se borra un dato.
+    const properties: Record<string, string> = {};
+    const firstname = cleanPersonName(input.firstname);
+    const lastname = cleanPersonName(input.lastname);
+    if (firstname) properties.firstname = firstname;
+    if (lastname) properties.lastname = lastname;
+    const email = normalizeEmail(input.email);
+    if (email) properties.email = email;
+    const phones = routePhones({ mobile: input.mobile, phone: input.phone });
+    if (phones.mobilephone) properties.mobilephone = phones.mobilephone;
+    if (phones.phone) properties.phone = phones.phone;
+    const jobtitle = input.jobtitle?.replace(/\s+/g, " ").trim();
+    if (jobtitle) properties.jobtitle = jobtitle;
+    const especialidad = normalizeEspecialidad(input.especialidad);
+    if (especialidad) properties.especialidad = especialidad;
+    const city = normalizeCity(input.city);
+    if (city) properties.city = city;
+
+    if (Object.keys(properties).length === 0 && !input.companyId) {
+      throw new ValidationError("No hay datos para actualizar.");
+    }
+    if (Object.keys(properties).length > 0) {
+      await this.client.patch(`/crm/v3/objects/contacts/${contactId}`, { properties });
+    }
+    if (input.companyId) {
+      // Asocia (o cambia) la empresa principal del contacto.
+      await this.client.put(
+        `/crm/v4/objects/contacts/${contactId}/associations/companies/${input.companyId}`,
+        [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 1 }]
+      );
+    }
+    const res = await this.client.get(`/crm/v3/objects/contacts/${contactId}`, {
+      params: { properties: CONTACT_PROPS.join(",") },
+    });
+    const [contact] = await this.toContacts([res.data]);
+    return contact;
+  }
+
+  async createCompany(input: CompanyInput): Promise<CreateCompanyResult> {
+    const name = cleanCompanyName(input.name);
+    const city = normalizeCity(input.city);
+    const domain = normalizeDomain(input.domain);
+    const phone = input.phone ? parsePhone(input.phone).value : undefined;
+
+    if (!input.allowDuplicate) {
+      const [check] = await this.searchCompany([name]);
+      if (check?.status === "error") {
+        throw new Error(`No se pudo verificar si la empresa ya existe (${check.error}). Intenta de nuevo.`);
+      }
+      if (check && (check.status === "exists" || check.status === "possible")) {
+        return {
+          status: "possible_duplicate",
+          matches: check.matches,
+          message:
+            "NO se creó: hay empresa(s) con nombre igual o parecido. Muéstraselas al usuario. Si es una de ellas, usa su id. Si es una sede nueva de esa marca, créala con el nombre «Marca Sede» y parent_company_id de la casa matriz. Solo si confirma que es otra empresa, vuelve a llamar create_company con allow_duplicate: true.",
+        };
+      }
+    }
+
+    const properties: Record<string, string> = { name };
+    if (city) properties.city = city;
+    if (domain) properties.domain = domain;
+    if (phone) properties.phone = phone;
+
+    const associations = input.parentCompanyId
+      ? [
+          {
+            to: { id: input.parentCompanyId },
+            // 14 = empresa hija (sede) → empresa matriz (HUBSPOT_DEFINED)
+            types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 14 }],
+          },
+        ]
+      : [];
+
+    const res = await this.client.post("/crm/v3/objects/companies", { properties, associations });
+    return { status: "created", company: { id: res.data.id, name, city, domain } };
   }
 
   // Devuelve los contactos y la empresa asociados a un deal en HubSpot. Lo

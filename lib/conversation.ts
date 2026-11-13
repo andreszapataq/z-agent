@@ -1,5 +1,6 @@
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 import { createAdminClient } from "./supabase";
+
+export type HistoryMessage = { role: "user" | "assistant"; content: string };
 
 // ============================================================
 // Conversation memory
@@ -38,7 +39,7 @@ export type TaskRef = {
 };
 
 export type ConversationContext = {
-  messages: ChatCompletionMessageParam[];
+  messages: HistoryMessage[];
   // task_id reales mostrados en el turno más reciente que listó tareas.
   recentTasks: TaskRef[];
 };

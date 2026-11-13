@@ -13,6 +13,7 @@ type Tenant = {
   status: string;
   whatsapp_phone_id: string | null;
   whatsapp_token: string | null;
+  whatsapp_provider: "meta" | "kapso";
   owner_number: string | null;
   hubspot_token: string | null;
   hubspot_owner_id: string | null;
@@ -48,6 +49,7 @@ export default function AdminPage() {
     whatsapp_phone_id: "",
     owner_number: "",
     whatsapp_token: "",
+    whatsapp_provider: "meta" as "meta" | "kapso",
     hubspot_token: "",
     hubspot_owner_id: "",
     system_prompt: "",
@@ -115,6 +117,7 @@ export default function AdminPage() {
         whatsapp_phone_id: tenant.whatsapp_phone_id || "",
         owner_number: tenant.owner_number || "",
         whatsapp_token: tenant.whatsapp_token || "",
+        whatsapp_provider: tenant.whatsapp_provider === "kapso" ? "kapso" : "meta",
         hubspot_token: tenant.hubspot_token || "",
         hubspot_owner_id: tenant.hubspot_owner_id || "",
         system_prompt: tenant.system_prompt || "",
@@ -132,6 +135,7 @@ export default function AdminPage() {
         whatsapp_phone_id: "",
         owner_number: "",
         whatsapp_token: "",
+        whatsapp_provider: "meta",
         hubspot_token: "",
         hubspot_owner_id: "",
         system_prompt: "",
@@ -541,10 +545,24 @@ export default function AdminPage() {
             </div>
 
             <div className={styles.formGroup}>
-              <label className={styles.formLabel}>Token WhatsApp (Meta)</label>
+              <label className={styles.formLabel}>Canal de WhatsApp</label>
+              <select
+                className={styles.formInput}
+                value={form.whatsapp_provider}
+                onChange={(e) => setForm({ ...form, whatsapp_provider: e.target.value as "meta" | "kapso" })}
+              >
+                <option value="meta">Meta (Cloud API directa)</option>
+                <option value="kapso">Kapso</option>
+              </select>
+            </div>
+
+            <div className={styles.formGroup}>
+              <label className={styles.formLabel}>
+                {form.whatsapp_provider === "kapso" ? "API key del proyecto (Kapso)" : "Token WhatsApp (Meta)"}
+              </label>
               <input
                 className={styles.formInput}
-                placeholder="EAAxxxxxxx"
+                placeholder={form.whatsapp_provider === "kapso" ? "API key de Kapso" : "EAAxxxxxxx"}
                 type="password"
                 value={form.whatsapp_token}
                 onChange={(e) => setForm({ ...form, whatsapp_token: e.target.value })}

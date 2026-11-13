@@ -1,5 +1,5 @@
 import { createAdminClient } from "./supabase";
-import { sendWhatsAppMessage } from "./whatsapp";
+import { credsFromTenant, sendWhatsAppMessage } from "./whatsapp";
 import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
 import { TaskItem } from "./crm/types";
@@ -104,12 +104,9 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
   let waOk = false;
   let waError: string | undefined;
   try {
-    await sendWhatsAppMessage(
-      tenant.whatsapp_phone_id!,
-      tenant.whatsapp_token!,
-      tenant.owner_number!,
-      body
-    );
+    const creds = credsFromTenant(tenant);
+    if (!creds) throw new Error("Tenant sin credenciales de WhatsApp");
+    await sendWhatsAppMessage(creds, tenant.owner_number!, body);
     waOk = true;
   } catch (waErr: any) {
     waError = waErr?.response?.data

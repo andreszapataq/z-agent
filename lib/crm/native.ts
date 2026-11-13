@@ -1,6 +1,38 @@
 import { createAdminClient } from "../supabase";
-import { CrmAdapter, Company, CompanySearchResult, Contact, Deal, DealStage, StageInfo, TaskItem, TaskPriority } from "./types";
-import { normalizePhone } from "./phone";
+import {
+  CrmAdapter,
+  Company,
+  CompanyInput,
+  CompanySearchResult,
+  Contact,
+  ContactInput,
+  ContactUpdate,
+  CreateCompanyResult,
+  CreateContactResult,
+  Deal,
+  DealStage,
+  StageInfo,
+  TaskItem,
+  TaskPriority,
+} from "./types";
+import {
+  ValidationError,
+  cleanCompanyName,
+  cleanPersonName,
+  normalizeEmail,
+  routePhones,
+} from "./contact-rules";
+
+function rowToContact(c: any): Contact {
+  return {
+    id: c.id,
+    name: c.full_name,
+    company: c.company || undefined,
+    email: c.email || undefined,
+    phone: c.phone || undefined,
+    jobtitle: c.position || undefined,
+  };
+}
 import { companyMatches, stripLegalSuffix } from "./match";
 
 const NATIVE_STAGE_LABELS: Array<{ slug: DealStage; label: string }> = [
@@ -73,15 +105,42 @@ export class NativeAdapter implements CrmAdapter {
     );
   }
 
-  async createContact(input: { name: string; company?: string; email?: string; phone?: string; jobtitle?: string }): Promise<Contact> {
-    const phone = normalizePhone(input.phone);
+  async createContact(input: ContactInput): Promise<CreateContactResult> {
+    const firstname = cleanPersonName(input.firstname);
+    if (!firstname) throw new ValidationError("Falta el nombre del contacto.");
+    const fullName = [firstname, cleanPersonName(input.lastname)].filter(Boolean).join(" ");
+    const email = normalizeEmail(input.email);
+    const phones = routePhones({ mobile: input.mobile, phone: input.phone });
+    // El CRM nativo tiene un solo campo de teléfono: preferimos el celular.
+    const phone = phones.mobilephone || phones.phone;
+    // Sin objeto Empresa: el "id" de empresa es su nombre (ver searchCompany).
+    const company = input.company || input.companyId;
+
+    if (!input.allowDuplicate && (email || phone)) {
+      const ors = [email && `email.eq.${email}`, phone && `phone.eq.${phone}`].filter(Boolean).join(",");
+      const { data: dups } = await this.supabase
+        .from("contacts")
+        .select("*")
+        .eq("tenant_id", this.tenantId)
+        .or(ors)
+        .limit(5);
+      if (dups && dups.length > 0) {
+        return {
+          status: "possible_duplicate",
+          matches: dups.map(rowToContact),
+          message:
+            "NO se creó: ya existe un contacto con el mismo correo o teléfono. Pregunta al usuario si es la misma persona; solo si confirma que es otra, vuelve a llamar create_contact con allow_duplicate: true.",
+        };
+      }
+    }
+
     const { data, error } = await this.supabase
       .from("contacts")
       .insert({
         tenant_id: this.tenantId,
-        full_name: input.name,
-        company: input.company,
-        email: input.email,
+        full_name: fullName,
+        company,
+        email,
         phone,
         position: input.jobtitle,
         source: "whatsapp",
@@ -90,14 +149,44 @@ export class NativeAdapter implements CrmAdapter {
       .single();
 
     if (error) throw error;
-    return {
-      id: data.id,
-      name: data.full_name,
-      company: data.company,
-      email: data.email,
-      phone: data.phone,
-      jobtitle: data.position,
-    };
+    return { status: "created", contact: rowToContact(data) };
+  }
+
+  async updateContact(contactId: string, input: ContactUpdate): Promise<Contact> {
+    const patch: Record<string, string> = {};
+    const firstname = cleanPersonName(input.firstname);
+    const lastname = cleanPersonName(input.lastname);
+    if (firstname || lastname) {
+      const { data: cur } = await this.supabase.from("contacts").select("full_name").eq("id", contactId).single();
+      const [curFirst, ...curRest] = String(cur?.full_name || "").split(" ");
+      patch.full_name = [firstname || curFirst, lastname || curRest.join(" ")].filter(Boolean).join(" ");
+    }
+    const email = normalizeEmail(input.email);
+    if (email) patch.email = email;
+    const phones = routePhones({ mobile: input.mobile, phone: input.phone });
+    const phone = phones.mobilephone || phones.phone;
+    if (phone) patch.phone = phone;
+    if (input.jobtitle) patch.position = input.jobtitle;
+    const company = input.company || input.companyId;
+    if (company) patch.company = company;
+    if (Object.keys(patch).length === 0) throw new ValidationError("No hay datos para actualizar.");
+
+    const { data, error } = await this.supabase
+      .from("contacts")
+      .update(patch)
+      .eq("tenant_id", this.tenantId)
+      .eq("id", contactId)
+      .select()
+      .single();
+    if (error) throw error;
+    return rowToContact(data);
+  }
+
+  // Sin objeto Empresa en el CRM nativo: la empresa existe en cuanto un
+  // contacto la usa. Devolvemos el nombre limpio como id.
+  async createCompany(input: CompanyInput): Promise<CreateCompanyResult> {
+    const name = cleanCompanyName(input.name);
+    return { status: "created", company: { id: name, name, city: input.city } };
   }
 
   async searchDeal(query: string): Promise<Deal[]> {

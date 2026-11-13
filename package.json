@@ -10,6 +10,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
     "@supabase/ssr": "^0.5.2",
     "@supabase/supabase-js": "^2.46.0",
     "@upstash/ratelimit": "^2.0.5",

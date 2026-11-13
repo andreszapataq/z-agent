@@ -1,29 +1,41 @@
-import OpenAI from "openai";
-import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions";
+import Anthropic from "@anthropic-ai/sdk";
 import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
 import { DealStage } from "./crm/types";
 import { createAdminClient } from "./supabase";
 import { loadConversationHistory, saveConversationTurn, TaskRef } from "./conversation";
+import type { AgentInput } from "./inbound";
 
-let _openai: OpenAI | null = null;
-function getOpenAI(): OpenAI {
-  if (!_openai) {
-    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Modelo del agente: Claude vía la API de Anthropic. Se puede cambiar sin
+// deploy de código con la variable AGENT_MODEL.
+const DEFAULT_MODEL = "claude-sonnet-5-5";
+
+let _anthropic: Anthropic | null = null;
+function getAnthropic(): Anthropic {
+  if (!_anthropic) {
+    _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   }
-  return _openai;
+  return _anthropic;
 }
 
-const TOOLS: ChatCompletionTool[] = [
+// Definiciones de tools en formato "function" (JSON Schema). Se convierten al
+// formato de tools de Claude al final (ver TOOLS).
+type FunctionDef = {
+  type: "function";
+  function: { name: string; description: string; parameters: Record<string, any> };
+};
+
+const FUNCTION_DEFS: FunctionDef[] = [
   {
     type: "function",
     function: {
       name: "search_contact",
-      description: "Busca un contacto en el CRM por nombre o empresa",
+      description:
+        "Busca contactos en el CRM por nombre, apellido, correo, empresa o número de teléfono (celular o fijo, en cualquier formato). Devuelve nombre, cargo, especialidad, empresa asociada (con su id), ciudad, celular (`mobile`), fijo (`phone`) y correo.",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Nombre o empresa a buscar" },
+          query: { type: "string", description: "Nombre, correo, empresa o número a buscar" },
         },
         required: ["query"],
       },
@@ -34,7 +46,7 @@ const TOOLS: ChatCompletionTool[] = [
     function: {
       name: "search_company",
       description:
-        "Verifica si una o varias EMPRESAS (compañías/cuentas) ya existen en el CRM. Pasa TODOS los nombres en un solo llamado — la tool los busca en paralelo. Úsalo siempre que el usuario pregunte qué empresas existen, cuáles faltan por crear, o si una empresa está registrada. NO uses search_contact para esto: las empresas son un objeto distinto de los contactos. Cada resultado trae `found` (true/false) y los `matches` encontrados.",
+        "Verifica si una o varias EMPRESAS (compañías/cuentas) ya existen en el CRM. Pasa TODOS los nombres en un solo llamado — la tool los busca en paralelo. Úsalo siempre que el usuario pregunte qué empresas existen, cuáles faltan por crear, o si una empresa está registrada. NO uses search_contact para esto: las empresas son un objeto distinto de los contactos. Cada resultado trae `status` y los `matches` encontrados, cada uno con su `id` (úsalo como company_id) y su ciudad.",
       parameters: {
         type: "object",
         properties: {
@@ -52,17 +64,84 @@ const TOOLS: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "create_contact",
-      description: "Crea un nuevo contacto en el CRM. Úsalo cuando el usuario mencione una persona/empresa que no existe aún.",
+      description:
+        "Crea un contacto nuevo. ANTES: búscalo con search_contact y busca su empresa con search_company para obtener company_id (si hay sede en su ciudad, usa la sede). El sistema valida y normaliza: celular → Móvil, fijo → Teléfono (+57 y 10 dígitos), nombres, ciudad con tildes, especialidad de la lista; asigna propietario y etapa Lead. Si responde `possible_duplicate`, NO se creó: muéstrale al usuario los contactos parecidos y pregunta. Si responde con error de validación, pídele al usuario el dato que falta.",
       parameters: {
         type: "object",
         properties: {
-          name: { type: "string" },
-          company: { type: "string" },
+          firstname: { type: "string", description: "Nombre(s), sin 'Dr.'/'Dra.' (ej. 'Juan Carlos')" },
+          lastname: { type: "string", description: "Apellido(s) (ej. 'Pérez Gómez'). Vacío para contactos de área." },
+          company_id: { type: "string", description: "ID de la empresa o sede (de search_company o create_company)" },
+          jobtitle: { type: "string", description: "Cargo = rol de la persona (Ortopedista, Instrumentadora, Jefe de Compras...)" },
+          especialidad: {
+            type: "string",
+            enum: ["Ortopedia", "Neurocirugía", "Maxilofacial", "Cirugía general", "Cirugía plástica", "Cirugía vascular", "Urología", "Oftalmología", "Podología"],
+            description: "Solo para médicos especialistas. Omítela en cualquier otro caso.",
+          },
+          mobile: { type: "string", description: "Celular tal como lo dicte el usuario" },
+          phone: { type: "string", description: "Teléfono fijo con indicativo y extensión si la hay (ej. '604 4446152 ext 2166')" },
           email: { type: "string" },
-          phone: { type: "string", description: "Teléfono tal como lo dicte el usuario; el sistema lo normaliza (agrega +57 a números colombianos)." },
-          jobtitle: { type: "string", description: "Cargo o puesto del contacto (ej. 'Gerente Comercial'), si el usuario lo menciona." },
+          city: { type: "string", description: "Ciudad donde trabaja el contacto" },
+          allow_duplicate: {
+            type: "boolean",
+            description: "Solo true si el usuario ya confirmó que es una persona distinta del posible duplicado que le mostraste.",
+          },
+          without_company: {
+            type: "boolean",
+            description: "Solo true si el usuario confirmó explícitamente que el contacto no tiene empresa.",
+          },
         },
-        required: ["name"],
+        required: ["firstname"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_contact",
+      description:
+        "Actualiza datos de un contacto existente (id de search_contact). Solo envía los campos que cambian: los que omitas quedan como están (nunca se borra un dato). Si el contacto ya tenía un valor distinto, confirma con el usuario antes de reemplazarlo. company_id asocia o cambia su empresa principal.",
+      parameters: {
+        type: "object",
+        properties: {
+          contact_id: { type: "string" },
+          firstname: { type: "string" },
+          lastname: { type: "string" },
+          company_id: { type: "string" },
+          jobtitle: { type: "string" },
+          especialidad: {
+            type: "string",
+            enum: ["Ortopedia", "Neurocirugía", "Maxilofacial", "Cirugía general", "Cirugía plástica", "Cirugía vascular", "Urología", "Oftalmología", "Podología"],
+          },
+          mobile: { type: "string" },
+          phone: { type: "string" },
+          email: { type: "string" },
+          city: { type: "string" },
+        },
+        required: ["contact_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_company",
+      description:
+        "Crea una empresa (clínica, hospital, IPS, distribuidor) o una sede. Úsalo SOLO después de que search_company no la encontró Y el usuario confirmó crearla. Nombre comercial (no razón social), sin S.A.S.; las sedes como «Marca Sede» con parent_company_id de la casa matriz. Si responde `possible_duplicate`, NO se creó: muestra las empresas parecidas y pregunta.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Nombre comercial (ej. 'Clínica Medilaser Neiva')" },
+          city: { type: "string" },
+          phone: { type: "string", description: "Teléfono principal con indicativo" },
+          domain: { type: "string", description: "Sitio web oficial, si se conoce" },
+          parent_company_id: { type: "string", description: "ID de la casa matriz, si es una sede" },
+          allow_duplicate: {
+            type: "boolean",
+            description: "Solo true si el usuario confirmó que es otra empresa distinta de las parecidas que le mostraste.",
+          },
+        },
+        required: ["name", "city"],
       },
     },
   },
@@ -219,6 +298,12 @@ const TOOLS: ChatCompletionTool[] = [
   },
 ];
 
+const TOOLS: Anthropic.Tool[] = FUNCTION_DEFS.map((t) => ({
+  name: t.function.name,
+  description: t.function.description,
+  input_schema: t.function.parameters as Anthropic.Tool.InputSchema,
+}));
+
 async function logActivity(tenantId: string, action: string, details: any) {
   try {
     const supabase = createAdminClient();
@@ -233,10 +318,11 @@ async function logActivity(tenantId: string, action: string, details: any) {
 }
 
 export async function processMessage(
-  userMessage: string,
+  input: string | AgentInput,
   tenant: Tenant,
   phone?: string
 ): Promise<string> {
+  const { text: userMessage, images = [] } = typeof input === "string" ? { text: input } : input;
   const crm = getCrmAdapter(tenant);
 
   // The OpenAI model has no notion of the current date, so it tends to
@@ -279,6 +365,14 @@ export async function processMessage(
 - \`status: "not_found"\` → no apareció ningún candidato; repórtala como faltante por crear.
 - \`status: "error"\` → no se pudo verificar (límite de consultas o permisos); dilo explícitamente, NO la clasifiques como existente ni faltante.
 Nunca declares el estado de una empresa sin que provenga del resultado de \`search_company\`.`;
+
+  const contactsContext =
+    `\n\n👤 REGLA DE CONTACTOS Y EMPRESAS:
+- Antes de crear un contacto, búscalo con \`search_contact\` (por nombre y, si lo tienes, por celular o correo). Si aparece, úsalo o actualízalo con \`update_contact\`; no crees otro.
+- Todo contacto nuevo va asociado a su empresa: obtén el \`company_id\` con \`search_company\` (si la institución tiene sede en la ciudad del contacto, usa la sede). Si la empresa no existe, pregúntale al usuario si la creas con \`create_company\`.
+- \`create_contact\` y \`create_company\` pueden responder \`possible_duplicate\`: en ese caso NO se creó nada. Muestra los registros parecidos y pregunta. Solo reintenta con \`allow_duplicate: true\` si el usuario confirma que es otro.
+- Si una tool responde con un error de validación (teléfono incompleto, especialidad inválida, falta la empresa), no inventes el dato: pídeselo al usuario.
+- Cuando el usuario envía un contacto compartido (📇), una nota de voz transcrita (🎤) o una foto (📷), extrae los datos, muéstrale cómo quedaría el registro y espera su confirmación antes de crear. En las fotos de tarjetas, lee con cuidado nombres y números; si algo no se ve claro, pregúntalo. Si una nota de voz trae nombres que suenan raros, confírmalos.`;
 
   const noHallucinationContext =
     `\n\n🚫 REGLA ANTIALUCINACIÓN (CRÍTICA): NUNCA afirmes que un contacto, empresa, deal o tarea existe o NO existe en el CRM sin haberlo verificado con la tool correspondiente (\`search_company\`, \`search_contact\`, \`search_deal\`, \`list_tasks\`) en este mismo turno. Si el usuario pide ese tipo de verificación, primero llama la tool y responde SOLO con base en su resultado. Si no tienes una tool capaz de verificar lo que se pide, dilo explícitamente en vez de adivinar. JAMÁS devuelvas el listado que te dio el usuario como si fuera el resultado de una verificación.`;
@@ -337,27 +431,48 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
     recentTasksContext = `\n\n📌 TAREAS QUE YA LE MOSTRASTE AL USUARIO EN ESTA CONVERSACIÓN (usa el task_id EXACTO de esta lista para complete_task; NUNCA inventes un id como "1"):\n${lines}`;
   }
 
-  const messages: ChatCompletionMessageParam[] = [
-    {
-      role: "system",
-      content:
-        (tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`) +
-        dateContext +
-        stagesContext +
-        companiesContext +
-        noHallucinationContext +
-        notesContext +
-        tasksContext +
-        appointmentContext +
-        listTasksContext +
-        completeTaskContext +
-        recentTasksContext,
-    },
-    ...history,
-    { role: "user", content: userMessage },
+  // Bloque estable (se cachea): prompt del tenant + reglas de código. Las
+  // partes que cambian por día o por turno (fecha, tareas recientes) van en un
+  // bloque aparte para no invalidar el caché.
+  const stableSystem =
+    (tenant.system_prompt || `Eres el asistente de ventas de ${tenant.name}.`) +
+    stagesContext +
+    companiesContext +
+    contactsContext +
+    noHallucinationContext +
+    notesContext +
+    tasksContext +
+    appointmentContext +
+    listTasksContext +
+    completeTaskContext;
+  const dynamicSystem = (dateContext + recentTasksContext).trim();
+
+  const system: Anthropic.TextBlockParam[] = [
+    { type: "text", text: stableSystem, cache_control: { type: "ephemeral" } },
+    { type: "text", text: dynamicSystem },
   ];
 
-  await logActivity(tenant.id, "message_received", { text: userMessage });
+  const userContent: Anthropic.ContentBlockParam[] = [
+    ...images.map(
+      (img): Anthropic.ImageBlockParam => ({
+        type: "image",
+        source: { type: "base64", media_type: img.mediaType, data: img.data },
+      })
+    ),
+    { type: "text", text: userMessage },
+  ];
+
+  const prior = normalizeHistory(history);
+  // Si el último turno guardado es del usuario (p.ej. un mensaje que no llegó a
+  // tener respuesta), lo unimos al actual para mantener la alternancia.
+  const lastPrior = prior[prior.length - 1];
+  if (lastPrior?.role === "user" && typeof lastPrior.content === "string") {
+    prior.pop();
+    userContent.unshift({ type: "text", text: lastPrior.content });
+  }
+  const messages: Anthropic.MessageParam[] = [...prior, { role: "user", content: userContent }];
+
+  await logActivity(tenant.id, "message_received", { text: userMessage, images: images.length });
   if (phone) await saveConversationTurn(tenant.id, phone, "user", userMessage);
 
   // Acumulamos las tareas que el agente liste durante este loop para
@@ -365,9 +480,14 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
   // siguiente mensaje de la conversación).
   let listedTasks: TaskRef[] = [];
 
+  // Consumo de tokens del turno, para seguir el costo en activity_log.
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 };
+  const model = process.env.AGENT_MODEL || DEFAULT_MODEL;
+
   // Persistimos la respuesta final del agente antes de devolverla, para que
   // el siguiente mensaje de la conversación la tenga como contexto.
   const finish = async (reply: string): Promise<string> => {
+    await logActivity(tenant.id, "model_usage", { model, ...usage });
     if (phone) {
       await saveConversationTurn(
         tenant.id,
@@ -382,32 +502,42 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
 
   // Loop del agente: usa tools hasta llegar a una respuesta final
   for (let i = 0; i < 10; i++) {
-    const response = await getOpenAI().chat.completions.create({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-      max_tokens: 1024,
+    const response = await getAnthropic().messages.create({
+      model,
+      max_tokens: 2048,
+      system,
       tools: TOOLS,
       messages,
     });
 
-    const choice = response.choices[0];
-    const message = choice.message;
-    messages.push(message);
+    usage.calls++;
+    usage.input += response.usage.input_tokens || 0;
+    usage.output += response.usage.output_tokens || 0;
+    usage.cacheRead += response.usage.cache_read_input_tokens || 0;
+    usage.cacheWrite += response.usage.cache_creation_input_tokens || 0;
 
-    if (!message.tool_calls || message.tool_calls.length === 0) {
-      return finish(message.content || "Listo.");
+    messages.push({ role: "assistant", content: response.content });
+
+    const toolUses = response.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+    );
+
+    if (response.stop_reason !== "tool_use" || toolUses.length === 0) {
+      const text = response.content
+        .filter((b): b is Anthropic.TextBlock => b.type === "text")
+        .map((b) => b.text)
+        .join("\n")
+        .trim();
+      return finish(text || "Listo.");
     }
 
-    for (const toolCall of message.tool_calls) {
-      if (toolCall.type !== "function") continue;
-      const name = toolCall.function.name;
-      let input: any = {};
-      try {
-        input = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
-      } catch {
-        input = {};
-      }
+    const results: Anthropic.ToolResultBlockParam[] = [];
+    for (const toolUse of toolUses) {
+      const name = toolUse.name;
+      const input = (toolUse.input || {}) as any;
 
       let toolResult = "";
+      let isError = false;
       try {
         switch (name) {
           case "search_contact":
@@ -417,7 +547,48 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
             toolResult = JSON.stringify(await crm.searchCompany(input.names || []));
             break;
           case "create_contact":
-            toolResult = JSON.stringify(await crm.createContact(input));
+            toolResult = JSON.stringify(
+              await crm.createContact({
+                firstname: input.firstname,
+                lastname: input.lastname,
+                companyId: input.company_id,
+                jobtitle: input.jobtitle,
+                especialidad: input.especialidad,
+                mobile: input.mobile,
+                phone: input.phone,
+                email: input.email,
+                city: input.city,
+                allowDuplicate: input.allow_duplicate === true,
+                withoutCompany: input.without_company === true,
+              })
+            );
+            break;
+          case "update_contact":
+            toolResult = JSON.stringify(
+              await crm.updateContact(input.contact_id, {
+                firstname: input.firstname,
+                lastname: input.lastname,
+                companyId: input.company_id,
+                jobtitle: input.jobtitle,
+                especialidad: input.especialidad,
+                mobile: input.mobile,
+                phone: input.phone,
+                email: input.email,
+                city: input.city,
+              })
+            );
+            break;
+          case "create_company":
+            toolResult = JSON.stringify(
+              await crm.createCompany({
+                name: input.name,
+                city: input.city,
+                phone: input.phone,
+                domain: input.domain,
+                parentCompanyId: input.parent_company_id,
+                allowDuplicate: input.allow_duplicate === true,
+              })
+            );
             break;
           case "search_deal":
             toolResult = JSON.stringify(await crm.searchDeal(input.query));
@@ -477,20 +648,43 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
           }
           default:
             toolResult = `Tool desconocido: ${name}`;
+            isError = true;
         }
         await logActivity(tenant.id, "tool_used", { tool: name, input });
       } catch (err: any) {
-        toolResult = `Error: ${err.message}`;
-        await logActivity(tenant.id, "tool_error", { tool: name, error: err.message });
+        const detail = err?.response?.data?.message || err.message;
+        toolResult = `Error: ${detail}`;
+        isError = true;
+        await logActivity(tenant.id, "tool_error", { tool: name, error: detail });
       }
 
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
+      results.push({
+        type: "tool_result",
+        tool_use_id: toolUse.id,
         content: toolResult,
+        ...(isError ? { is_error: true } : {}),
       });
     }
+
+    messages.push({ role: "user", content: results });
   }
 
   return finish("No pude completar la acción. Intenta reformular.");
+}
+
+// La memoria guarda turnos de texto. La API exige que la conversación empiece
+// con un turno del usuario; los turnos seguidos del mismo rol se unen.
+function normalizeHistory(history: { role: "user" | "assistant"; content: string }[]): Anthropic.MessageParam[] {
+  const out: Anthropic.MessageParam[] = [];
+  for (const m of history) {
+    if (!m.content) continue;
+    if (out.length === 0 && m.role !== "user") continue;
+    const last = out[out.length - 1];
+    if (last && last.role === m.role && typeof last.content === "string") {
+      last.content = `${last.content}\n\n${m.content}`;
+    } else {
+      out.push({ role: m.role, content: m.content });
+    }
+  }
+  return out;
 }

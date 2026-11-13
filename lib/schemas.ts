@@ -9,6 +9,7 @@ export const tenantCreateSchema = z.object({
   status: z.enum(["active", "paused"]).optional(),
   whatsapp_phone_id: z.string().max(64).nullable().optional(),
   whatsapp_token: z.string().max(2048).nullable().optional(),
+  whatsapp_provider: z.enum(["meta", "kapso"]).optional(),
   owner_number: z
     .string()
     .regex(/^\d{8,16}$/, "owner_number debe ser dígitos en formato E.164 sin '+'")
@@ -21,7 +22,7 @@ export const tenantCreateSchema = z.object({
     .max(32)
     .nullable()
     .optional(),
-  system_prompt: z.string().max(8000).nullable().optional(),
+  system_prompt: z.string().max(20000).nullable().optional(),
 
   // Proposal notification config
   proposal_stage_id: z.string().max(64).nullable().optional(),
