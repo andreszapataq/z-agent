@@ -7,6 +7,9 @@ export type Tenant = {
   status: "active" | "paused";
   whatsapp_phone_id: string | null;
   whatsapp_token: string | null;
+  // Canal de WhatsApp: "meta" (Cloud API directa, token de Meta) o "kapso"
+  // (proxy de Kapso, API key del proyecto en whatsapp_token).
+  whatsapp_provider: "meta" | "kapso";
   owner_number: string | null;
   hubspot_token: string | null;
   hubspot_owner_id: string | null;

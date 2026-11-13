@@ -2,10 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { waitUntil } from "@vercel/functions";
 import { getTenantByPhone } from "@/lib/tenants";
 import { processMessage } from "@/lib/agent";
-import { sendWhatsAppMessage, verifyMetaSignature } from "@/lib/whatsapp";
+import {
+  credsFromTenant,
+  markReadWithTyping,
+  sendWhatsAppMessage,
+  verifyKapsoSignature,
+  verifyMetaSignature,
+} from "@/lib/whatsapp";
+import { toAgentInput } from "@/lib/inbound";
+import { firstTimeSeen } from "@/lib/dedupe";
 import { checkLimit, webhookLimiter } from "@/lib/ratelimit";
 
-// Meta requiere verificación inicial del webhook (GET)
+// Meta requiere verificación inicial del webhook (GET). Con Kapso no aplica:
+// Kapso recibe el webhook de Meta y nos reenvía el payload por POST.
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
@@ -18,14 +27,19 @@ export async function GET(req: NextRequest) {
   return new NextResponse("Forbidden", { status: 403 });
 }
 
-// Mensajes entrantes (POST)
+// Mensajes entrantes (POST). Llegan con el formato de la Cloud API de Meta,
+// ya sea directo de Meta (firma `x-hub-signature-256`) o reenviados por un
+// webhook tipo "meta" de Kapso (firma `x-webhook-signature`).
 export async function POST(req: NextRequest) {
   // Leer el body como texto para poder verificar la firma sobre el cuerpo crudo
   const rawBody = await req.text();
-  const signature = req.headers.get("x-hub-signature-256");
+  const kapsoSig = req.headers.get("x-webhook-signature");
+  const valid = kapsoSig
+    ? verifyKapsoSignature(rawBody, kapsoSig)
+    : verifyMetaSignature(rawBody, req.headers.get("x-hub-signature-256"));
 
-  if (!verifyMetaSignature(rawBody, signature)) {
-    console.warn("[webhook] firma inválida o ausente");
+  if (!valid) {
+    console.warn(`[webhook] firma inválida o ausente (${kapsoSig ? "kapso" : "meta"})`);
     return new NextResponse("Forbidden", { status: 403 });
   }
 
@@ -36,14 +50,11 @@ export async function POST(req: NextRequest) {
     return new NextResponse("Bad Request", { status: 400 });
   }
 
-  // Meta espera un 200 en menos de 20 s, pero el loop del agente
-  // (OpenAI + CRM + reply) puede tardar varios segundos. `waitUntil`
-  // le dice al runtime de Vercel que mantenga la función viva hasta
-  // que la promesa se resuelva, mientras la respuesta ya viajó.
+  // Meta espera un 200 en < 20 s y Kapso en < 10 s, pero el loop del agente
+  // (modelo + CRM + respuesta) puede tardar más. `waitUntil` mantiene viva la
+  // función mientras la respuesta ya viajó.
   waitUntil(
-    processIncomingMessage(body).catch((err) =>
-      console.error("[webhook error]", err)
-    )
+    processIncomingMessage(body).catch((err) => console.error("[webhook error]", err))
   );
 
   return NextResponse.json({ ok: true });
@@ -54,8 +65,11 @@ async function processIncomingMessage(body: any) {
   const message = change?.value?.messages?.[0];
   const phoneNumberId = change?.value?.metadata?.phone_number_id;
 
-  if (!message || message.type !== "text") return;
-  if (!phoneNumberId) return;
+  // Eventos sin mensaje (estados de entrega, etc.) se ignoran.
+  if (!message || !phoneNumberId) return;
+
+  // Reintentos de Meta/Kapso: cada message.id se procesa una sola vez.
+  if (message.id && !(await firstTimeSeen(message.id))) return;
 
   // Rate limit por phone_number_id (tenant). Si excede, no procesamos.
   const limit = await checkLimit(webhookLimiter, phoneNumberId);
@@ -68,18 +82,19 @@ async function processIncomingMessage(body: any) {
   if (!tenant) return;
 
   // Solo el owner del tenant puede activar el agente
-  if (message.from !== tenant.owner_number) return;
+  if (!message.from || message.from !== tenant.owner_number) return;
 
-  const reply = await processMessage(message.text.body, tenant, message.from);
+  const creds = credsFromTenant(tenant);
+  if (!creds) return;
 
-  if (tenant.whatsapp_phone_id && tenant.whatsapp_token) {
-    await sendWhatsAppMessage(
-      tenant.whatsapp_phone_id,
-      tenant.whatsapp_token,
-      message.from,
-      reply
-    );
-  }
+  if (message.id) await markReadWithTyping(creds, message.id);
+
+  const inbound = await toAgentInput(message, creds);
+  const reply = inbound.ok
+    ? await processMessage(inbound.input, tenant, message.from)
+    : inbound.reply;
+
+  await sendWhatsAppMessage(creds, message.from, reply);
 }
 
 // Configuración para el endpoint

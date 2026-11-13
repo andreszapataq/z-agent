@@ -6,7 +6,8 @@ Multi-tenant WhatsApp AI Agent con soporte para múltiples CRMs.
 
 - **Next.js 15** (App Router, Server Components)
 - **Supabase** (PostgreSQL + Auth)
-- **OpenAI gpt-4.1-mini** (Agente con tool use — configurable vía `OPENAI_MODEL`)
+- **Claude Sonnet 5.5** vía API de Anthropic (agente con tool use — configurable vía `AGENT_MODEL`)
+- **Kapso** (opcional, por tenant) como canal de WhatsApp
 - **Meta WhatsApp Business API** (mensajería)
 - **Upstash Redis** (rate limiting)
 - **Vercel** (hosting)

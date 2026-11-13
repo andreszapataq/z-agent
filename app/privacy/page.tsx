@@ -101,9 +101,13 @@ export default function PrivacyPolicyPage() {
           mediante WhatsApp Business API.
         </li>
         <li>
-          <strong>OpenAI, L.L.C.</strong> — generación de las respuestas del
-          asistente vía la API de Chat Completions. Los datos enviados no se
-          utilizan para entrenamiento.
+          <strong>Kapso</strong> — cuando el Cliente lo elige como canal,
+          entrega de mensajes de WhatsApp Business API.
+        </li>
+        <li>
+          <strong>Anthropic, PBC</strong> — generación de las respuestas del
+          asistente (modelos Claude) vía la API de Anthropic. Los datos
+          enviados por la API no se utilizan para entrenar modelos.
         </li>
         <li>
           <strong>Supabase, Inc.</strong> — almacenamiento de configuración
