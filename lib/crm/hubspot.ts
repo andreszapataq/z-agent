@@ -689,7 +689,11 @@ export class HubSpotAdapter implements CrmAdapter {
           hs_task_subject: title,
           hs_task_status: "NOT_STARTED",
           hs_task_priority: hsPriority,
-          hs_task_type: "TODO",
+          // Las citas se tipan como MEETING (se leen/filtran como "Reunión" en
+          // HubSpot) sin dejar de ser un Task: así conservan los recordatorios
+          // (hs_task_reminders es propiedad del Task; el objeto Meeting no tiene
+          // recordatorio por API) y la cola de tareas del comercial.
+          hs_task_type: input.isAppointment ? "MEETING" : "TODO",
           hs_timestamp: dueTs,
           hs_task_reminders: remindersValue,
           // HubSpot solo dispara la notificación del recordatorio si la tarea tiene owner.
