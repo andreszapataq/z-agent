@@ -5,6 +5,8 @@ import { DealStage } from "./crm/types";
 import { createAdminClient } from "./supabase";
 import { loadConversationHistory, saveConversationTurn, TaskRef } from "./conversation";
 import type { AgentInput } from "./inbound";
+import { formatForWhatsApp } from "./whatsapp-format";
+import { summarizeTool } from "./tool-trace";
 
 // Modelo del agente: Claude vía la API de Anthropic. Se puede cambiar sin
 // deploy de código con la variable AGENT_MODEL.
@@ -375,7 +377,13 @@ Nunca declares el estado de una empresa sin que provenga del resultado de \`sear
 - Cuando el usuario envía un contacto compartido (📇) o una foto (📷), extrae los datos, muéstrale cómo quedaría el registro y espera su confirmación antes de crear. En las fotos de tarjetas, lee con cuidado nombres y números; si algo no se ve claro, pregúntalo. Si el texto parece dictado por voz y trae nombres que suenan raros, confírmalos.`;
 
   const noHallucinationContext =
-    `\n\n🚫 REGLA ANTIALUCINACIÓN (CRÍTICA): NUNCA afirmes que un contacto, empresa, deal o tarea existe o NO existe en el CRM sin haberlo verificado con la tool correspondiente (\`search_company\`, \`search_contact\`, \`search_deal\`, \`list_tasks\`) en este mismo turno. Si el usuario pide ese tipo de verificación, primero llama la tool y responde SOLO con base en su resultado. Si no tienes una tool capaz de verificar lo que se pide, dilo explícitamente en vez de adivinar. JAMÁS devuelvas el listado que te dio el usuario como si fuera el resultado de una verificación.`;
+    `\n\n🚫 REGLA ANTIALUCINACIÓN (CRÍTICA): NUNCA afirmes que un contacto, empresa, deal o tarea existe o NO existe en el CRM sin haberlo verificado con la tool correspondiente (\`search_company\`, \`search_contact\`, \`search_deal\`, \`list_tasks\`) en este mismo turno o en un turno anterior cuyo [Registro interno] lo muestre. Si el usuario pide ese tipo de verificación, primero llama la tool y responde SOLO con base en su resultado. Si no tienes una tool capaz de verificar lo que se pide, dilo explícitamente en vez de adivinar. JAMÁS devuelvas el listado que te dio el usuario como si fuera el resultado de una verificación.`;
+
+  const historyContext =
+    `\n\n🧾 HISTORIAL: los turnos anteriores tuyos terminan con un [Registro interno] de las herramientas que ejecutaste en ese turno, con los IDs reales. Úsalo para saber qué ya verificaste o creaste (y para reutilizar esos IDs). No lo copies en tus respuestas, no lo menciones y no te disculpes por turnos anteriores: si un turno no tiene registro, simplemente vuelve a verificar con la tool.`;
+
+  const formatContext =
+    `\n\n💬 FORMATO WHATSAPP: negrita con UN asterisco (*así*), nunca dos. Sin títulos con #, sin tablas ni enlaces Markdown. Listas con "•" o "-". Mensajes cortos.`;
 
   const notesContext =
     `\n\n📝 REGLA DE NOTAS: cuando muevas un deal con un motivo concreto (p.ej. "pidió documentos técnicos", "objetó el precio", "pidió tiempo para decidir"), inmediatamente después del \`move_deal\` llama \`create_note\` describiendo brevemente el motivo. Pasa SIEMPRE ambos identificadores cuando los tengas: \`deal_id\` (del deal que moviste) Y \`contact_id\` (del contacto asociado, que viene en search_deal/search_contact). Así el comercial ve la nota tanto en la timeline del deal como en la del contacto sin importar desde dónde llegue.`;
@@ -440,6 +448,8 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
     companiesContext +
     contactsContext +
     noHallucinationContext +
+    historyContext +
+    formatContext +
     notesContext +
     tasksContext +
     appointmentContext +
@@ -479,6 +489,8 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
   // persistirlas como metadata del turno (sus task_id reales viajan al
   // siguiente mensaje de la conversación).
   let listedTasks: TaskRef[] = [];
+  // Resumen de herramientas ejecutadas en este turno (ver tool-trace.ts).
+  const actions: string[] = [];
 
   // Consumo de tokens del turno, para seguir el costo en activity_log.
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, calls: 0 };
@@ -486,15 +498,19 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
 
   // Persistimos la respuesta final del agente antes de devolverla, para que
   // el siguiente mensaje de la conversación la tenga como contexto.
-  const finish = async (reply: string): Promise<string> => {
+  const finish = async (raw: string): Promise<string> => {
+    const reply = formatForWhatsApp(raw);
     await logActivity(tenant.id, "model_usage", { model, ...usage });
     if (phone) {
+      const metadata: Record<string, unknown> = {};
+      if (listedTasks.length > 0) metadata.tasks = listedTasks;
+      if (actions.length > 0) metadata.actions = actions;
       await saveConversationTurn(
         tenant.id,
         phone,
         "assistant",
         reply,
-        listedTasks.length > 0 ? { tasks: listedTasks } : undefined
+        Object.keys(metadata).length > 0 ? metadata : undefined
       );
     }
     return reply;
@@ -657,6 +673,8 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
         isError = true;
         await logActivity(tenant.id, "tool_error", { tool: name, error: detail });
       }
+
+      actions.push(summarizeTool(name, input, toolResult, isError));
 
       results.push({
         type: "tool_result",

@@ -1,4 +1,5 @@
 import { createAdminClient } from "./supabase";
+import { annotateWithTrace } from "./tool-trace";
 
 export type HistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -76,7 +77,12 @@ export async function loadConversationHistory(
     // Volteamos a orden cronológico para que el modelo lea la secuencia.
     const messages = data
       .reverse()
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        // Los turnos del asistente llevan el registro de herramientas que
+        // ejecutó, para que el modelo sepa que sí verificó (ver tool-trace.ts).
+        content: m.role === "assistant" ? annotateWithTrace(m.content, (m.metadata as any)?.actions) : m.content,
+      }));
 
     return { messages, recentTasks };
   } catch (e) {
