@@ -33,11 +33,19 @@ export function getClientIp(req: NextRequest): string {
 
 // Devuelve true si pasa, false si excede. Si Upstash no está configurado, deja pasar
 // (fail-open) — apropiado para entornos de dev. En prod, configura Upstash siempre.
+// Si Upstash falla (credenciales inválidas, base archivada por inactividad,
+// caída), también deja pasar y lo registra: un rate limit caído no puede
+// tumbar el login del panel ni el webhook de WhatsApp.
 export async function checkLimit(
   limiter: Ratelimit | null,
   key: string
 ): Promise<{ ok: boolean; remaining?: number; reset?: number }> {
   if (!limiter) return { ok: true };
-  const res = await limiter.limit(key);
-  return { ok: res.success, remaining: res.remaining, reset: res.reset };
+  try {
+    const res = await limiter.limit(key);
+    return { ok: res.success, remaining: res.remaining, reset: res.reset };
+  } catch (e: any) {
+    console.error("[ratelimit] Upstash no respondió, dejando pasar:", e?.message || e);
+    return { ok: true };
+  }
 }
