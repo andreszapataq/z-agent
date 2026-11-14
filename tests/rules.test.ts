@@ -104,3 +104,17 @@ test("firmas del webhook", () => {
   assert.equal(verifyMetaSignature(body, meta), true);
   assert.equal(verifyMetaSignature(body + " ", meta), false);
 });
+
+import { isAuthorizedSender, parseNumberList } from "../lib/authorized";
+
+test("números autorizados", () => {
+  const t = { owner_number: "573001112233", authorized_numbers: ["573104445566"] };
+  assert.equal(isAuthorizedSender(t, "573001112233"), true);
+  assert.equal(isAuthorizedSender(t, "573104445566"), true);
+  assert.equal(isAuthorizedSender(t, "573109999999"), false);
+  assert.equal(isAuthorizedSender(t, null), false);
+  assert.equal(isAuthorizedSender({ owner_number: "573001112233" }, "573001112233"), true);
+  assert.equal(isAuthorizedSender({ owner_number: null, authorized_numbers: [] }, "573001112233"), false);
+  assert.deepEqual(parseNumberList("+57 300 1112233, 573104445566;573104445566"), ["573001112233", "573104445566"]);
+  assert.deepEqual(parseNumberList(""), []);
+});

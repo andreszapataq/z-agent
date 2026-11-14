@@ -11,6 +11,7 @@ import {
 } from "@/lib/whatsapp";
 import { toAgentInput } from "@/lib/inbound";
 import { firstTimeSeen } from "@/lib/dedupe";
+import { isAuthorizedSender } from "@/lib/authorized";
 import { checkLimit, webhookLimiter } from "@/lib/ratelimit";
 
 // Meta requiere verificación inicial del webhook (GET). Con Kapso no aplica:
@@ -81,8 +82,8 @@ async function processIncomingMessage(body: any) {
   const tenant = await getTenantByPhone(phoneNumberId);
   if (!tenant) return;
 
-  // Solo el owner del tenant puede activar el agente
-  if (!message.from || message.from !== tenant.owner_number) return;
+  // Solo el número principal y los autorizados del tenant activan el agente
+  if (!isAuthorizedSender(tenant, message.from)) return;
 
   const creds = credsFromTenant(tenant);
   if (!creds) return;

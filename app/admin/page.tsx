@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import styles from "./admin.module.css";
+import { parseNumberList } from "@/lib/authorized";
 
 type CrmType = "hubspot" | "native" | "salesforce";
 
@@ -15,6 +16,7 @@ type Tenant = {
   whatsapp_token: string | null;
   whatsapp_provider: "meta" | "kapso";
   owner_number: string | null;
+  authorized_numbers?: string[] | null;
   hubspot_token: string | null;
   hubspot_owner_id: string | null;
   system_prompt: string | null;
@@ -48,6 +50,7 @@ export default function AdminPage() {
     crm_type: "native" as CrmType,
     whatsapp_phone_id: "",
     owner_number: "",
+    authorized_numbers: "",
     whatsapp_token: "",
     whatsapp_provider: "meta" as "meta" | "kapso",
     hubspot_token: "",
@@ -116,6 +119,7 @@ export default function AdminPage() {
         crm_type: tenant.crm_type,
         whatsapp_phone_id: tenant.whatsapp_phone_id || "",
         owner_number: tenant.owner_number || "",
+        authorized_numbers: (tenant.authorized_numbers || []).join(", "),
         whatsapp_token: tenant.whatsapp_token || "",
         whatsapp_provider: tenant.whatsapp_provider === "kapso" ? "kapso" : "meta",
         hubspot_token: tenant.hubspot_token || "",
@@ -134,6 +138,7 @@ export default function AdminPage() {
         crm_type: "native",
         whatsapp_phone_id: "",
         owner_number: "",
+        authorized_numbers: "",
         whatsapp_token: "",
         whatsapp_provider: "meta",
         hubspot_token: "",
@@ -250,6 +255,7 @@ export default function AdminPage() {
       if (!payload[k]) payload[k] = null;
     }
     if (!Object.keys(payload.stage_map || {}).length) payload.stage_map = null;
+    payload.authorized_numbers = parseNumberList(form.authorized_numbers);
 
     try {
       const res = await fetch(url, {
@@ -416,6 +422,9 @@ export default function AdminPage() {
                     <div className={styles.tcMeta}>
                       <span className={`${styles.tag} ${styles.tagAccent}`}>{crmLabel}</span>
                       {t.owner_number && <span className={styles.tag}>{t.owner_number}</span>}
+                      {(t.authorized_numbers?.length ?? 0) > 0 && (
+                        <span className={styles.tag}>+{t.authorized_numbers!.length} autorizado(s)</span>
+                      )}
                       {hasWA ? (
                         <span className={styles.tag}>WhatsApp</span>
                       ) : (
@@ -542,6 +551,20 @@ export default function AdminPage() {
                   onChange={(e) => setForm({ ...form, owner_number: e.target.value })}
                 />
               </div>
+            </div>
+
+            <div className={styles.formGroup}>
+              <label className={styles.formLabel}>Otros números autorizados</label>
+              <input
+                className={styles.formInput}
+                placeholder="573001234567, 573101234567"
+                value={form.authorized_numbers}
+                onChange={(e) => setForm({ ...form, authorized_numbers: e.target.value })}
+              />
+              <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 0" }}>
+                Pueden hablar con el agente igual que el número owner, cada uno con su propia
+                conversación. El resumen diario solo le llega al número owner. Separa con comas.
+              </p>
             </div>
 
             <div className={styles.formGroup}>
