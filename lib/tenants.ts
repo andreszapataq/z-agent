@@ -10,7 +10,10 @@ export type Tenant = {
   // Canal de WhatsApp: "meta" (Cloud API directa, token de Meta) o "kapso"
   // (proxy de Kapso, API key del proyecto en whatsapp_token).
   whatsapp_provider: "meta" | "kapso";
+  // Número principal: habla con el agente y recibe el resumen diario.
   owner_number: string | null;
+  // Otros números que pueden hablar con el agente (pruebas, asistentes).
+  authorized_numbers: string[];
   hubspot_token: string | null;
   hubspot_owner_id: string | null;
   system_prompt: string | null;

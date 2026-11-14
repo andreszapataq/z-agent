@@ -15,6 +15,10 @@ export const tenantCreateSchema = z.object({
     .regex(/^\d{8,16}$/, "owner_number debe ser dígitos en formato E.164 sin '+'")
     .nullable()
     .optional(),
+  authorized_numbers: z
+    .array(z.string().regex(/^\d{8,16}$/, "Cada número autorizado debe ser dígitos en formato E.164 sin '+'"))
+    .max(10)
+    .optional(),
   hubspot_token: z.string().max(2048).nullable().optional(),
   hubspot_owner_id: z
     .string()

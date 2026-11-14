@@ -28,7 +28,7 @@ WhatsApp user → Meta API (directo, o Kapso reenviando el payload de Meta) → 
   → sendWhatsAppMessage()     (reply via Meta Graph API or Kapso proxy, per tenant.whatsapp_provider)
 ```
 
-The webhook responds 200 immediately and processes async (`processIncomingMessage` is fire-and-forget). Only messages from `tenant.owner_number` are processed — one authorized phone per tenant.
+The webhook responds 200 immediately and processes async (`processIncomingMessage` is fire-and-forget). Only messages from `tenant.owner_number` or one of `tenant.authorized_numbers` are processed (`isAuthorizedSender` in `lib/authorized.ts`). The owner is the main number and the only one that gets the daily digest; authorized numbers (an admin testing, a sales assistant) talk to the agent the same way, each with its own conversation memory (memory is keyed by phone).
 
 ### Agent loop (`lib/agent.ts`)
 
