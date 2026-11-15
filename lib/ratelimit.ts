@@ -1,6 +1,7 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { NextRequest } from "next/server";
+import { safeError } from "./safe-error";
 
 const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
 const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -44,8 +45,8 @@ export async function checkLimit(
   try {
     const res = await limiter.limit(key);
     return { ok: res.success, remaining: res.remaining, reset: res.reset };
-  } catch (e: any) {
-    console.error("[ratelimit] Upstash no respondió, dejando pasar:", e?.message || e);
+  } catch (e) {
+    console.error("[ratelimit] Upstash no respondió, dejando pasar:", safeError(e));
     return { ok: true };
   }
 }

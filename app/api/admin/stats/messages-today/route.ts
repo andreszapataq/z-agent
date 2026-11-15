@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase";
 import { isAuthenticated } from "@/lib/admin-auth";
+import { safeError } from "@/lib/safe-error";
 
 export const maxDuration = 30;
 
@@ -30,7 +31,7 @@ export async function GET(req: NextRequest) {
     .gte("created_at", since);
 
   if (error) {
-    console.error("[stats/messages-today]", error);
+    console.error("[stats/messages-today]", safeError(error));
     return NextResponse.json({ error: "Error consultando actividad" }, { status: 500 });
   }
 

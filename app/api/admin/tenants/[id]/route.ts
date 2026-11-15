@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTenant, saveTenant, deleteTenant } from "@/lib/tenants";
+import { getTenant, getTenantForAdmin, saveTenant, deleteTenant, toAdminTenant } from "@/lib/tenants";
 import { isAuthenticated } from "@/lib/admin-auth";
 import { tenantUpdateSchema } from "@/lib/schemas";
+import { dropUnchangedTokens } from "@/lib/tenant-secrets";
+import { safeError } from "@/lib/safe-error";
 
 export const maxDuration = 30;
 
@@ -13,7 +15,8 @@ export async function GET(
     return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
   const { id } = await params;
-  const tenant = await getTenant(id);
+  // Tokens enmascarados: el panel nunca recibe un token completo.
+  const tenant = await getTenantForAdmin(id);
   if (!tenant) {
     return NextResponse.json({ error: "No encontrado" }, { status: 404 });
   }
@@ -45,20 +48,21 @@ export async function PUT(
   }
 
   try {
-    // Si no llega name, leer el actual para no nullificarlo en el upsert
-    let name = parsed.data.name;
-    if (!name) {
-      const existing = await getTenant(id);
-      if (!existing) {
-        return NextResponse.json({ error: "No encontrado" }, { status: 404 });
-      }
-      name = existing.name;
+    const existing = await getTenant(id);
+    if (!existing) {
+      return NextResponse.json({ error: "No encontrado" }, { status: 404 });
     }
+    // Un token solo se sobrescribe si llega con un valor nuevo. Vacío, null o
+    // el texto enmascarado que mostró el panel → se conserva el actual (la
+    // columna no viaja en el upsert y PostgREST no la toca).
+    const data = dropUnchangedTokens(parsed.data, existing);
+    // Si no llega name, usar el actual para no nullificarlo en el upsert
+    const name = data.name || existing.name;
     // Forzamos el id de la URL — no permitimos cambiarlo desde el body
-    const saved = await saveTenant({ ...parsed.data, id, name });
-    return NextResponse.json(saved);
+    const saved = await saveTenant({ ...data, id, name });
+    return NextResponse.json(toAdminTenant(saved));
   } catch (err: any) {
-    console.error("[admin/tenants PUT]", err);
+    console.error("[admin/tenants PUT]", safeError(err));
     return NextResponse.json({ error: "Error guardando tenant" }, { status: 500 });
   }
 }
@@ -75,7 +79,7 @@ export async function DELETE(
     await deleteTenant(id);
     return NextResponse.json({ ok: true });
   } catch (err: any) {
-    console.error("[admin/tenants DELETE]", err);
+    console.error("[admin/tenants DELETE]", safeError(err));
     return NextResponse.json({ error: "Error eliminando tenant" }, { status: 500 });
   }
 }

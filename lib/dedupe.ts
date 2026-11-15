@@ -1,4 +1,5 @@
 import { Redis } from "@upstash/redis";
+import { safeError } from "./safe-error";
 
 // Kapso reintenta la entrega del webhook si no recibe 200 en 10 s, y Meta
 // también reintenta. Para no procesar dos veces el mismo mensaje (y crear un
@@ -17,7 +18,7 @@ export async function firstTimeSeen(key: string): Promise<boolean> {
     const res = await redis.set(`wa:msg:${key}`, "1", { nx: true, ex: TTL_SECONDS });
     return res === "OK";
   } catch (e) {
-    console.error("[dedupe] redis error, dejando pasar", e);
+    console.error("[dedupe] redis error, dejando pasar", safeError(e));
     return true;
   }
 }

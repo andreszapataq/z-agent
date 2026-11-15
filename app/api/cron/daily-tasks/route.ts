@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pollDailyDigests } from "@/lib/daily-digest";
+import { safeError } from "@/lib/safe-error";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -16,7 +17,7 @@ export async function GET(req: NextRequest) {
     const digests = await pollDailyDigests();
     return NextResponse.json({ ok: true, digests });
   } catch (err: any) {
-    console.error("[cron/daily-tasks] error", err);
+    console.error("[cron/daily-tasks] error", safeError(err));
     return NextResponse.json(
       { error: err?.message || "error" },
       { status: 500 }

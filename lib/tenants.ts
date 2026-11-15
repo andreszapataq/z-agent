@@ -1,4 +1,5 @@
 import { createAdminClient } from "./supabase";
+import { maskTenantTokens } from "./tenant-secrets";
 
 export type Tenant = {
   id: string;
@@ -38,6 +39,12 @@ export type Tenant = {
   updated_at: string;
 };
 
+// ------------------------------------------------------------
+// Lectura interna: tokens completos. Solo para código de servidor que los
+// usa (agente, crons, WhatsApp, consultas a HubSpot). Nunca devuelvas su
+// resultado tal cual al navegador.
+// ------------------------------------------------------------
+
 export async function getAllTenants(): Promise<Tenant[]> {
   const supabase = createAdminClient();
   const { data, error } = await supabase
@@ -46,6 +53,23 @@ export async function getAllTenants(): Promise<Tenant[]> {
     .order("created_at", { ascending: false });
   if (error) throw error;
   return data || [];
+}
+
+// ------------------------------------------------------------
+// Lectura para el panel de administración: tokens enmascarados.
+// ------------------------------------------------------------
+
+export function toAdminTenant(tenant: Tenant): Tenant {
+  return maskTenantTokens(tenant);
+}
+
+export async function getAllTenantsForAdmin(): Promise<Tenant[]> {
+  return (await getAllTenants()).map(toAdminTenant);
+}
+
+export async function getTenantForAdmin(id: string): Promise<Tenant | null> {
+  const tenant = await getTenant(id);
+  return tenant ? toAdminTenant(tenant) : null;
 }
 
 export async function getTenant(id: string): Promise<Tenant | null> {

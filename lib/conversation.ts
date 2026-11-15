@@ -1,5 +1,6 @@
 import { createAdminClient } from "./supabase";
 import { annotateWithTrace } from "./tool-trace";
+import { safeError } from "./safe-error";
 
 export type HistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -86,7 +87,7 @@ export async function loadConversationHistory(
 
     return { messages, recentTasks };
   } catch (e) {
-    console.error("[conversation load error]", e);
+    console.error("[conversation load error]", safeError(e));
     return { messages: [], recentTasks: [] };
   }
 }
@@ -105,6 +106,6 @@ export async function saveConversationTurn(
       .from("conversation_messages")
       .insert({ tenant_id: tenantId, phone, role, content, metadata: metadata ?? null });
   } catch (e) {
-    console.error("[conversation save error]", e);
+    console.error("[conversation save error]", safeError(e));
   }
 }

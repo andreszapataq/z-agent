@@ -13,6 +13,7 @@ import { toAgentInput } from "@/lib/inbound";
 import { firstTimeSeen } from "@/lib/dedupe";
 import { isAuthorizedSender } from "@/lib/authorized";
 import { checkLimit, webhookLimiter } from "@/lib/ratelimit";
+import { safeError } from "@/lib/safe-error";
 
 // Meta requiere verificación inicial del webhook (GET). Con Kapso no aplica:
 // Kapso recibe el webhook de Meta y nos reenvía el payload por POST.
@@ -55,7 +56,7 @@ export async function POST(req: NextRequest) {
   // (modelo + CRM + respuesta) puede tardar más. `waitUntil` mantiene viva la
   // función mientras la respuesta ya viajó.
   waitUntil(
-    processIncomingMessage(body).catch((err) => console.error("[webhook error]", err))
+    processIncomingMessage(body).catch((err) => console.error("[webhook error]", safeError(err)))
   );
 
   return NextResponse.json({ ok: true });
@@ -95,7 +96,13 @@ async function processIncomingMessage(body: any) {
     ? await processMessage(inbound.input, tenant, message.from)
     : inbound.reply;
 
-  await sendWhatsAppMessage(creds, message.from, reply);
+  try {
+    await sendWhatsAppMessage(creds, message.from, reply);
+  } catch (err) {
+    // Típico: ventana de 24 h cerrada o token vencido. Solo status y cuerpo
+    // de la respuesta; nunca el error completo (lleva cabeceras con el token).
+    console.error(`[webhook] no se pudo enviar la respuesta (tenant=${tenant.id})`, safeError(err));
+  }
 }
 
 // Configuración para el endpoint
