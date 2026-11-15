@@ -70,8 +70,27 @@ export function summarizeTool(name: string, input: any, result: string, isError:
   }
 }
 
+// El modelo ve en el historial que sus turnos terminan con el bloque
+// "[Registro interno …]" y a veces lo imita al final de su respuesta (con un
+// listado inventado, no el real). Pese a la instrucción del prompt, pasó en
+// producción y llegó por WhatsApp al usuario. Este filtro es la garantía
+// determinista: se aplica a la respuesta antes de enviarla/guardarla, y al
+// leer el historial, para que un turno ya contaminado no refuerce el patrón.
+const TRACE_MARKER = /\[\s*Registro interno/i;
+
+export function stripInternalTrace(content: string): string {
+  const m = TRACE_MARKER.exec(content);
+  if (!m) return content;
+  const before = content.slice(0, m.index).trimEnd();
+  if (before) return before; // caso normal: el bloque va al final
+  // Si (raro) el bloque viene al inicio, quitamos solo hasta su "]" de cierre.
+  const close = content.indexOf("]", m.index);
+  return close === -1 ? "" : content.slice(close + 1).trim();
+}
+
 // Agrega al texto de un turno del asistente el registro de lo que ejecutó.
 export function annotateWithTrace(content: string, actions: unknown): string {
+  content = stripInternalTrace(content);
   if (!Array.isArray(actions) || actions.length === 0) return content;
   const lines = actions.slice(0, 12).map((a) => `- ${String(a)}`);
   return `${content}\n\n[Registro interno — herramientas que ejecutaste en este turno (no lo menciones al usuario):\n${lines.join("\n")}]`;

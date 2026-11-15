@@ -6,7 +6,7 @@ import { createAdminClient } from "./supabase";
 import { loadConversationHistory, saveConversationTurn, TaskRef } from "./conversation";
 import type { AgentInput } from "./inbound";
 import { formatForWhatsApp } from "./whatsapp-format";
-import { summarizeTool } from "./tool-trace";
+import { summarizeTool, stripInternalTrace } from "./tool-trace";
 import { safeError } from "./safe-error";
 
 // Modelo del agente: Claude vía la API de Anthropic. Se puede cambiar sin
@@ -500,7 +500,9 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
   // Persistimos la respuesta final del agente antes de devolverla, para que
   // el siguiente mensaje de la conversación la tenga como contexto.
   const finish = async (raw: string): Promise<string> => {
-    const reply = formatForWhatsApp(raw);
+    // stripInternalTrace: el modelo a veces imita el [Registro interno] del
+    // historial al final de su respuesta; nunca debe llegar al usuario.
+    const reply = formatForWhatsApp(stripInternalTrace(raw));
     await logActivity(tenant.id, "model_usage", { model, ...usage });
     if (phone) {
       const metadata: Record<string, unknown> = {};
