@@ -46,7 +46,8 @@ z-agent/
 ├── supabase/
 │   ├── schema.sql                    ← Snapshot consolidado (referencia)
 │   └── migrations/                   ← Migraciones versionadas (fuente de verdad)
-├── .env.local.example
+├── prompts/                          ← Solo plantillas anonimizadas (*.example.md)
+├── .env.example                      ← Plantilla de variables de entorno
 └── package.json
 ```
 
@@ -78,14 +79,16 @@ npm install
 ### 4. Configurar variables de entorno
 
 ```bash
-cp .env.local.example .env.local
+cp .env.example .env.local
 ```
 
-Edita `.env.local` con tus valores. Genera secrets con:
+Edita `.env.local` con tus valores. Ningún archivo `.env*` se versiona, salvo la plantilla `.env.example`. Genera secrets con:
 
 ```bash
-openssl rand -hex 32   # ADMIN_SECRET, WEBHOOK_VERIFY_TOKEN
+openssl rand -hex 32   # ADMIN_SECRET, WEBHOOK_VERIFY_TOKEN, CRON_SECRET
 ```
+
+Los tokens de WhatsApp y HubSpot de cada cliente no van en `.env.local`: se guardan en la tabla `tenants` y se editan desde `/admin`.
 
 ### 5. Correr en local
 
