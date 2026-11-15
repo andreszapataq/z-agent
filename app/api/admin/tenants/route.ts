@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getAllTenants, saveTenant } from "@/lib/tenants";
+import { getAllTenantsForAdmin, saveTenant, toAdminTenant } from "@/lib/tenants";
 import { isAuthenticated } from "@/lib/admin-auth";
 import { tenantCreateSchema } from "@/lib/schemas";
+import { dropUnchangedTokens } from "@/lib/tenant-secrets";
+import { safeError } from "@/lib/safe-error";
 
 export const maxDuration = 30;
 
@@ -9,7 +11,8 @@ export async function GET(req: NextRequest) {
   if (!isAuthenticated(req)) {
     return NextResponse.json({ error: "No autorizado" }, { status: 401 });
   }
-  const tenants = await getAllTenants();
+  // Tokens enmascarados: el panel nunca recibe un token completo.
+  const tenants = await getAllTenantsForAdmin();
   return NextResponse.json(tenants);
 }
 
@@ -33,10 +36,12 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const saved = await saveTenant(parsed.data);
-    return NextResponse.json(saved, { status: 201 });
+    // Tenant nuevo: no hay token actual, pero descartamos un texto enmascarado
+    // por si llega uno por error (nunca debe guardarse como token).
+    const saved = await saveTenant(dropUnchangedTokens(parsed.data, null));
+    return NextResponse.json(toAdminTenant(saved), { status: 201 });
   } catch (err: any) {
-    console.error("[admin/tenants POST]", err);
+    console.error("[admin/tenants POST]", safeError(err));
     return NextResponse.json({ error: "Error guardando tenant" }, { status: 500 });
   }
 }

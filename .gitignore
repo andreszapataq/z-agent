@@ -1,8 +1,19 @@
 node_modules/
 .next/
 .vercel/
-.env.local
-.env*.local
 *.log
 .DS_Store
 *.tsbuildinfo
+
+# Variables de entorno: ningún .env se versiona, salvo la plantilla
+.env*
+!.env.example
+
+# Informes de auditoría (locales, nunca al repositorio público)
+AUDITORIA*.md
+
+# Prompts reales de clientes: la versión viva está en Supabase
+# (tenants.system_prompt) y la copia local no se versiona. En el repo solo
+# van las plantillas anonimizadas.
+prompts/*.md
+!prompts/*.example.md

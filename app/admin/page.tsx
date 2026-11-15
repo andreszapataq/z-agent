@@ -62,6 +62,14 @@ export default function AdminPage() {
     daily_digest_enabled: false,
   });
 
+  // Tokens actuales enmascarados (la API nunca devuelve el token completo).
+  // Se muestran como referencia; el campo de edición arranca vacío y, si se
+  // guarda vacío, el servidor conserva el token actual.
+  const [tokenHints, setTokenHints] = useState<{ whatsapp_token: string | null; hubspot_token: string | null }>({
+    whatsapp_token: null,
+    hubspot_token: null,
+  });
+
   const [pipelines, setPipelines] = useState<PipelineOption[] | null>(null);
   const [loadingPipelines, setLoadingPipelines] = useState(false);
   const [owners, setOwners] = useState<{ id: string; name: string; email: string }[] | null>(null);
@@ -113,6 +121,10 @@ export default function AdminPage() {
     setOwners(null);
     if (tenant) {
       setEditing(tenant.id);
+      setTokenHints({
+        whatsapp_token: tenant.whatsapp_token || null,
+        hubspot_token: tenant.hubspot_token || null,
+      });
       setForm({
         id: tenant.id,
         name: tenant.name,
@@ -120,9 +132,9 @@ export default function AdminPage() {
         whatsapp_phone_id: tenant.whatsapp_phone_id || "",
         owner_number: tenant.owner_number || "",
         authorized_numbers: (tenant.authorized_numbers || []).join(", "),
-        whatsapp_token: tenant.whatsapp_token || "",
+        whatsapp_token: "",
         whatsapp_provider: tenant.whatsapp_provider === "kapso" ? "kapso" : "meta",
-        hubspot_token: tenant.hubspot_token || "",
+        hubspot_token: "",
         hubspot_owner_id: tenant.hubspot_owner_id || "",
         system_prompt: tenant.system_prompt || "",
         proposal_stage_id: tenant.proposal_stage_id || "",
@@ -132,6 +144,7 @@ export default function AdminPage() {
       });
     } else {
       setEditing(null);
+      setTokenHints({ whatsapp_token: null, hubspot_token: null });
       setForm({
         id: "",
         name: "",
@@ -230,7 +243,7 @@ export default function AdminPage() {
       showToast("ID y nombre son requeridos", "error");
       return;
     }
-    if (form.crm_type === "hubspot" && !form.hubspot_token) {
+    if (form.crm_type === "hubspot" && !form.hubspot_token && !tokenHints.hubspot_token) {
       showToast("Si el CRM es HubSpot, el token es requerido", "error");
       return;
     }
@@ -240,7 +253,8 @@ export default function AdminPage() {
       : "/api/admin/tenants";
     const method = editing ? "PUT" : "POST";
 
-    // Normalizar: strings vacíos → null, stage_map vacío → null
+    // Normalizar: strings vacíos → null, stage_map vacío → null.
+    // Un token vacío (null) significa "no cambiarlo": el servidor conserva el actual.
     const payload: any = { ...form };
     for (const k of [
       "whatsapp_phone_id",
@@ -585,11 +599,21 @@ export default function AdminPage() {
               </label>
               <input
                 className={styles.formInput}
-                placeholder={form.whatsapp_provider === "kapso" ? "API key de Kapso" : "EAAxxxxxxx"}
+                placeholder={
+                  tokenHints.whatsapp_token
+                    ? `Actual: ${tokenHints.whatsapp_token}`
+                    : form.whatsapp_provider === "kapso" ? "API key de Kapso" : "EAAxxxxxxx"
+                }
                 type="password"
+                autoComplete="new-password"
                 value={form.whatsapp_token}
                 onChange={(e) => setForm({ ...form, whatsapp_token: e.target.value })}
               />
+              {tokenHints.whatsapp_token && (
+                <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 0" }}>
+                  Actual: <code>{tokenHints.whatsapp_token}</code>. Déjalo vacío para no cambiarlo.
+                </p>
+              )}
             </div>
 
             <div className={styles.formGroup}>
@@ -616,11 +640,17 @@ export default function AdminPage() {
                 <label className={styles.formLabel}>Token HubSpot</label>
                 <input
                   className={styles.formInput}
-                  placeholder="pat-na-xxxxxxx"
+                  placeholder={tokenHints.hubspot_token ? `Actual: ${tokenHints.hubspot_token}` : "pat-na-xxxxxxx"}
                   type="password"
+                  autoComplete="new-password"
                   value={form.hubspot_token}
                   onChange={(e) => setForm({ ...form, hubspot_token: e.target.value })}
                 />
+                {tokenHints.hubspot_token && (
+                  <p style={{ fontSize: 11, color: "var(--text3)", margin: "4px 0 0" }}>
+                    Actual: <code>{tokenHints.hubspot_token}</code>. Déjalo vacío para no cambiarlo.
+                  </p>
+                )}
               </div>
             )}
 

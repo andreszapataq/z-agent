@@ -1,5 +1,6 @@
 import axios from "axios";
 import crypto from "crypto";
+import { safeError, toSafeError } from "./safe-error";
 
 // ============================================================
 // Canal de WhatsApp: Meta directo o Kapso
@@ -51,12 +52,19 @@ export function authHeaders(creds: Pick<WhatsAppCreds, "provider" | "token">): R
     : { Authorization: `Bearer ${creds.token}` };
 }
 
+// Los errores de axios llevan las cabeceras (con el token) en `config` y
+// `request`; los relanzamos ya limpios para que ningún llamador pueda
+// registrarlos por accidente. Se conservan `response.status` y `response.data`.
 async function postMessage(creds: WhatsAppCreds, payload: Record<string, unknown>): Promise<void> {
-  await axios.post(
-    `${apiBase(creds.provider)}/${creds.phoneId}/messages`,
-    { messaging_product: "whatsapp", ...payload },
-    { headers: authHeaders(creds) }
-  );
+  try {
+    await axios.post(
+      `${apiBase(creds.provider)}/${creds.phoneId}/messages`,
+      { messaging_product: "whatsapp", ...payload },
+      { headers: authHeaders(creds) }
+    );
+  } catch (err) {
+    throw toSafeError(err);
+  }
 }
 
 export async function sendWhatsAppMessage(creds: WhatsAppCreds, to: string, text: string): Promise<void> {
@@ -96,8 +104,8 @@ export async function markReadWithTyping(creds: WhatsAppCreds, messageId: string
       message_id: messageId,
       typing_indicator: { type: "text" },
     });
-  } catch (e: any) {
-    console.warn("[whatsapp] markRead falló:", e?.response?.status || e?.message);
+  } catch (e) {
+    console.warn("[whatsapp] markRead falló:", safeError(e));
   }
 }
 
@@ -108,6 +116,17 @@ export async function markReadWithTyping(creds: WhatsAppCreds, messageId: string
 //   por Kapso) y la `url` original de Meta. Preferimos `download_url`; la
 //   API key solo se envía si el host es de Kapso.
 export async function downloadMedia(
+  creds: WhatsAppCreds,
+  mediaId: string
+): Promise<{ data: Buffer; mimeType: string }> {
+  try {
+    return await fetchMedia(creds, mediaId);
+  } catch (err) {
+    throw toSafeError(err);
+  }
+}
+
+async function fetchMedia(
   creds: WhatsAppCreds,
   mediaId: string
 ): Promise<{ data: Buffer; mimeType: string }> {

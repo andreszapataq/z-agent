@@ -7,6 +7,7 @@ import { loadConversationHistory, saveConversationTurn, TaskRef } from "./conver
 import type { AgentInput } from "./inbound";
 import { formatForWhatsApp } from "./whatsapp-format";
 import { summarizeTool } from "./tool-trace";
+import { safeError } from "./safe-error";
 
 // Modelo del agente: Claude vía la API de Anthropic. Se puede cambiar sin
 // deploy de código con la variable AGENT_MODEL.
@@ -315,7 +316,7 @@ async function logActivity(tenantId: string, action: string, details: any) {
       details,
     });
   } catch (e) {
-    console.error("[activity_log error]", e);
+    console.error("[activity_log error]", safeError(e));
   }
 }
 
@@ -357,7 +358,7 @@ export async function processMessage(
       stagesContext = `\n\n📊 ETAPAS DEL PIPELINE (orden real del CRM del tenant):\n${lines}\n\nCuando hables con el usuario, usa los labels (la parte entre comillas). En los tools \`move_deal\` y \`create_deal\` usa el slug (la parte con backticks).`;
     }
   } catch (e) {
-    console.error("[listStages error]", e);
+    console.error("[listStages error]", safeError(e));
   }
 
   const companiesContext =
@@ -671,7 +672,11 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
         const detail = err?.response?.data?.message || err.message;
         toolResult = `Error: ${detail}`;
         isError = true;
-        await logActivity(tenant.id, "tool_error", { tool: name, error: detail });
+        // status y data (recortado a ~1000 caracteres) para saber qué campo
+        // rechazó el CRM, p. ej. en un 400 de HubSpot. safeError nunca incluye
+        // las cabeceras de la petición.
+        const { status, data } = safeError(err, 1000);
+        await logActivity(tenant.id, "tool_error", { tool: name, error: detail, status, data });
       }
 
       actions.push(summarizeTool(name, input, toolResult, isError));
