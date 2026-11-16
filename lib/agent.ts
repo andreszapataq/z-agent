@@ -524,6 +524,11 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
     const response = await getAnthropic().messages.create({
       model,
       max_tokens: 2048,
+      // Caché automática del final de la conversación: en la 2.ª+ iteración
+      // del loop, el historial y los tool_result anteriores se leen de caché
+      // ($0,10/M) en vez de cobrarse completos ($2/M). No cambia lo que ve el
+      // modelo. Mismo TTL (5 min) que el marcador del bloque estable.
+      cache_control: { type: "ephemeral" },
       system,
       tools: TOOLS,
       messages,
