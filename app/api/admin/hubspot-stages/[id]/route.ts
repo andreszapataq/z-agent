@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
+import type { HttpErrorLike } from "@/lib/safe-error";
+import type { HubSpotPipeline, HubSpotResults } from "@/lib/crm/hubspot-types";
 import { isAuthenticated } from "@/lib/admin-auth";
 import { getTenant } from "@/lib/tenants";
 
@@ -28,23 +30,24 @@ export async function GET(
   }
 
   try {
-    const res = await axios.get(
+    const res = await axios.get<HubSpotResults<HubSpotPipeline>>(
       "https://api.hubapi.com/crm/v3/pipelines/deals",
       { headers: { Authorization: `Bearer ${tenant.hubspot_token}` } }
     );
-    const pipelines = (res.data.results || []).map((p: any) => ({
+    const pipelines = (res.data.results || []).map((p) => ({
       id: p.id,
       label: p.label,
       stages: (p.stages || [])
-        .map((s: any) => ({
+        .map((s) => ({
           id: s.id,
           label: s.label,
           displayOrder: s.displayOrder,
         }))
-        .sort((a: any, b: any) => a.displayOrder - b.displayOrder),
+        .sort((a, b) => a.displayOrder - b.displayOrder),
     }));
     return NextResponse.json({ pipelines });
-  } catch (err: any) {
+  } catch (error) {
+    const err = error as HttpErrorLike;
     console.error("[hubspot-stages]", err?.response?.data || err.message);
     return NextResponse.json(
       {

@@ -42,6 +42,20 @@ export function safeError(err: unknown, maxChars = DEFAULT_MAX_CHARS): SafeError
   return out;
 }
 
+// Forma de un error HTTP (axios, SafeHttpError o similar) tal como la leen los
+// `catch`, para tiparlos sin `any`: `const e = err as HttpErrorLike`. Todo es
+// opcional porque el error puede no venir de HTTP. Solo describe lo que se lee;
+// para registrar un error sigue valiendo la regla de arriba (safeError).
+export type HttpErrorLike = {
+  message?: string;
+  config?: { method?: string; url?: string };
+  response?: {
+    status?: number;
+    headers?: Record<string, unknown>;
+    data?: { message?: string } & Record<string, unknown>;
+  };
+};
+
 // Para código que hace HTTP y relanza el error: devuelve un Error nuevo con
 // el mismo mensaje y solo `response.status` / `response.data`, de modo que
 // quien lo capture siga pudiendo leer `err.response.status` o

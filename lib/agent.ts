@@ -1,13 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
-import { DealStage } from "./crm/types";
+import { DealStage, TaskPriority } from "./crm/types";
 import { createAdminClient } from "./supabase";
 import { loadConversationHistory, saveConversationTurn, TaskRef } from "./conversation";
 import type { AgentInput } from "./inbound";
 import { formatForWhatsApp } from "./whatsapp-format";
 import { summarizeTool, stripInternalTrace } from "./tool-trace";
-import { safeError } from "./safe-error";
+import { safeError, type HttpErrorLike } from "./safe-error";
 
 // Modelo del agente: Claude vía la API de Anthropic. Se puede cambiar sin
 // deploy de código con la variable AGENT_MODEL.
@@ -25,7 +25,44 @@ function getAnthropic(): Anthropic {
 // formato de tools de Claude al final (ver TOOLS).
 type FunctionDef = {
   type: "function";
-  function: { name: string; description: string; parameters: Record<string, any> };
+  function: { name: string; description: string; parameters: Record<string, unknown> };
+};
+
+// Argumentos que el modelo manda a las herramientas: la unión de los campos que
+// declaran los JSON Schema de FUNCTION_DEFS. No se validan en runtime (el
+// modelo sigue el schema y los adapters validan lo crítico); cada herramienta
+// usa solo los suyos, por eso los obligatorios de una figuran como string.
+type ToolInput = {
+  query: string;
+  names?: string[];
+  contact_id: string;
+  company_id?: string;
+  parent_company_id?: string;
+  deal_id: string;
+  task_id: string;
+  firstname: string;
+  lastname?: string;
+  jobtitle?: string;
+  especialidad?: string;
+  mobile?: string;
+  phone?: string;
+  email?: string;
+  city?: string;
+  domain?: string;
+  name: string;
+  amount?: number;
+  stage?: string;
+  note: string;
+  title: string;
+  due_date: string;
+  due_time?: string;
+  priority?: TaskPriority;
+  is_appointment?: boolean;
+  from_date: string;
+  to_date: string;
+  include_completed?: boolean;
+  allow_duplicate?: boolean;
+  without_company?: boolean;
 };
 
 const FUNCTION_DEFS: FunctionDef[] = [
@@ -307,7 +344,7 @@ const TOOLS: Anthropic.Tool[] = FUNCTION_DEFS.map((t) => ({
   input_schema: t.function.parameters as Anthropic.Tool.InputSchema,
 }));
 
-async function logActivity(tenantId: string, action: string, details: any) {
+async function logActivity(tenantId: string, action: string, details: Record<string, unknown>) {
   try {
     const supabase = createAdminClient();
     await supabase.from("activity_log").insert({
@@ -553,7 +590,7 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
     const results: Anthropic.ToolResultBlockParam[] = [];
     for (const toolUse of toolUses) {
       const name = toolUse.name;
-      const input = (toolUse.input || {}) as any;
+      const input = (toolUse.input || {}) as ToolInput;
 
       let toolResult = "";
       let isError = false;
@@ -670,8 +707,9 @@ Al responder, agrupa las tareas por estado temporal y preséntalas en este orden
             isError = true;
         }
         await logActivity(tenant.id, "tool_used", { tool: name, input });
-      } catch (err: any) {
-        const detail = err?.response?.data?.message || err.message;
+      } catch (err) {
+        const e = err as HttpErrorLike;
+        const detail = e?.response?.data?.message || e.message;
         toolResult = `Error: ${detail}`;
         isError = true;
         // status y data (recortado a ~1000 caracteres) para saber qué campo

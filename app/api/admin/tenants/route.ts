@@ -40,7 +40,7 @@ export async function POST(req: NextRequest) {
     // por si llega uno por error (nunca debe guardarse como token).
     const saved = await saveTenant(dropUnchangedTokens(parsed.data, null));
     return NextResponse.json(toAdminTenant(saved), { status: 201 });
-  } catch (err: any) {
+  } catch (err) {
     console.error("[admin/tenants POST]", safeError(err));
     return NextResponse.json({ error: "Error guardando tenant" }, { status: 500 });
   }

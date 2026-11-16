@@ -2,6 +2,10 @@ import { createAdminClient } from "./supabase";
 import { annotateWithTrace } from "./tool-trace";
 import { safeError } from "./safe-error";
 
+// metadata (jsonb) de un turno guardado: tareas listadas y registro de
+// herramientas. Se valida al leerlo (Array.isArray), por eso es unknown.
+type TurnMetadata = { tasks?: unknown; actions?: unknown };
+
 export type HistoryMessage = { role: "user" | "assistant"; content: string };
 
 // ============================================================
@@ -68,7 +72,7 @@ export async function loadConversationHistory(
     // turno más reciente que las tenga (las que el usuario tiene "frescas").
     let recentTasks: TaskRef[] = [];
     for (const m of data) {
-      const tasks = (m.metadata as any)?.tasks;
+      const tasks = (m.metadata as TurnMetadata | null)?.tasks;
       if (Array.isArray(tasks) && tasks.length > 0) {
         recentTasks = tasks as TaskRef[];
         break;
@@ -82,7 +86,7 @@ export async function loadConversationHistory(
         role: m.role as "user" | "assistant",
         // Los turnos del asistente llevan el registro de herramientas que
         // ejecutó, para que el modelo sepa que sí verificó (ver tool-trace.ts).
-        content: m.role === "assistant" ? annotateWithTrace(m.content, (m.metadata as any)?.actions) : m.content,
+        content: m.role === "assistant" ? annotateWithTrace(m.content, (m.metadata as TurnMetadata | null)?.actions) : m.content,
       }));
 
     return { messages, recentTasks };

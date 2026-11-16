@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pollProposalEmails, pollProposalNotifications } from "@/lib/hubspot-poll";
-import { safeError } from "@/lib/safe-error";
+import { safeError, type HttpErrorLike } from "@/lib/safe-error";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
@@ -21,10 +21,10 @@ export async function GET(req: NextRequest) {
     //    esta misma corrida, sin esperar al índice de búsqueda de HubSpot.
     const deals = await pollProposalNotifications(emails.dealsByTenant);
     return NextResponse.json({ ok: true, emails, deals });
-  } catch (err: any) {
+  } catch (err) {
     console.error("[cron/check-deals] error", safeError(err));
     return NextResponse.json(
-      { error: err?.message || "error" },
+      { error: (err as HttpErrorLike)?.message || "error" },
       { status: 500 }
     );
   }

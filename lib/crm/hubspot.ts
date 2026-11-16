@@ -1,4 +1,4 @@
-import axios, { AxiosInstance } from "axios";
+import axios, { AxiosInstance, AxiosResponse } from "axios";
 import {
   CrmAdapter,
   Company,
@@ -29,6 +29,18 @@ import {
   routePhones,
 } from "./contact-rules";
 import { companyMatches, stripLegalSuffix } from "./match";
+import type {
+  DealProps,
+  HubSpotAssociationBatchRow,
+  HubSpotAssociationInput,
+  HubSpotAssociationRef,
+  HubSpotFilter,
+  HubSpotFilterGroup,
+  HubSpotObject,
+  HubSpotProps,
+  HubSpotResults,
+} from "./hubspot-types";
+import type { HttpErrorLike } from "../safe-error";
 
 // Fallback al pipeline default de HubSpot. Cada tenant puede sobrescribir
 // con su propio mapeo via `tenant.stage_map`.
@@ -151,13 +163,13 @@ export class HubSpotAdapter implements CrmAdapter {
 
   // Convierte resultados crudos de HubSpot en Contact, resolviendo el nombre de
   // la empresa principal asociada (objeto Empresa, no el texto `company`).
-  private async toContacts(raw: any[]): Promise<Contact[]> {
+  private async toContacts(raw: HubSpotObject[]): Promise<Contact[]> {
     const companyIds = Array.from(
       new Set(raw.map((c) => c.properties?.associatedcompanyid).filter(Boolean))
     ) as string[];
     const companies = await this.readCompanies(companyIds);
     return raw.map((c) => {
-      const p = c.properties || {};
+      const p: HubSpotProps = c.properties || {};
       const comp = p.associatedcompanyid ? companies.get(p.associatedcompanyid) : undefined;
       return {
         id: c.id,
@@ -192,20 +204,22 @@ export class HubSpotAdapter implements CrmAdapter {
           domain: c.properties?.domain || undefined,
         });
       }
-    } catch (e: any) {
+    } catch (err) {
+      const e = err as HttpErrorLike;
       console.warn("[hubspot] batch read de empresas falló:", e?.response?.status || e?.message);
     }
     return out;
   }
 
   // POST a un endpoint de search con reintento ante 429 (límite bajo de HubSpot).
-  private async searchWithRetry(path: string, body: any) {
+  private async searchWithRetry(path: string, body: object) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        return await this.client.post(path, body);
-      } catch (err: any) {
-        if (err?.response?.status === 429 && attempt < 2) {
-          const retryAfter = Number(err?.response?.headers?.["retry-after"]) || attempt + 1;
+        return await this.client.post<HubSpotResults<HubSpotObject>>(path, body);
+      } catch (err) {
+        const e = err as HttpErrorLike;
+        if (e?.response?.status === 429 && attempt < 2) {
+          const retryAfter = Number(e?.response?.headers?.["retry-after"]) || attempt + 1;
           await new Promise((r) => setTimeout(r, retryAfter * 1000));
           continue;
         }
@@ -231,22 +245,23 @@ export class HubSpotAdapter implements CrmAdapter {
     const rawSearch = async (query: string): Promise<Company[]> => {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await this.client.post("/crm/v3/objects/companies/search", {
+          const res = await this.client.post<HubSpotResults<HubSpotObject>>("/crm/v3/objects/companies/search", {
             query,
             properties: ["name", "domain", "city"],
             limit: 5,
           });
-          return (res.data.results || []).map((c: any) => ({
+          return (res.data.results || []).map((c) => ({
             id: c.id,
             name: c.properties?.name || "(sin nombre)",
-            domain: c.properties?.domain,
+            domain: c.properties?.domain || undefined,
             city: c.properties?.city || undefined,
           }));
-        } catch (err: any) {
-          const status = err?.response?.status;
+        } catch (err) {
+          const e = err as HttpErrorLike;
+          const status = e?.response?.status;
           // Reintentamos solo ante rate limit; respetamos Retry-After si viene.
           if (status === 429 && attempt < 2) {
-            const retryAfter = Number(err?.response?.headers?.["retry-after"]) || attempt + 1;
+            const retryAfter = Number(e?.response?.headers?.["retry-after"]) || attempt + 1;
             await new Promise((r) => setTimeout(r, retryAfter * 1000));
             continue;
           }
@@ -282,8 +297,9 @@ export class HubSpotAdapter implements CrmAdapter {
         }
 
         return { query: name, status: "not_found", matches: [] };
-      } catch (err: any) {
-        const msg = err?.response?.data?.message || err.message;
+      } catch (err) {
+        const e = err as HttpErrorLike;
+        const msg = e?.response?.data?.message || e.message;
         return { query: name, status: "error", matches: [], error: msg };
       }
     };
@@ -316,12 +332,12 @@ export class HubSpotAdapter implements CrmAdapter {
     mobilephone?: string;
     companyId?: string;
   }): Promise<Contact[]> {
-    const groups: any[] = [];
+    const groups: HubSpotFilterGroup[] = [];
     if (input.email) groups.push({ filters: [{ propertyName: "email", operator: "EQ", value: input.email }] });
     if (input.mobilephone)
       groups.push({ filters: [{ propertyName: "mobilephone", operator: "EQ", value: input.mobilephone }] });
 
-    const found = new Map<string, any>();
+    const found = new Map<string, HubSpotObject>();
     if (groups.length) {
       const res = await this.searchWithRetry("/crm/v3/objects/contacts/search", {
         filterGroups: groups,
@@ -339,7 +355,7 @@ export class HubSpotAdapter implements CrmAdapter {
         limit: 10,
       });
       for (const c of res.data.results || []) {
-        const p = c.properties || {};
+        const p: HubSpotProps = c.properties || {};
         const same = normalizeForMatch(`${p.firstname || ""} ${p.lastname || ""}`) === fullName;
         const sameCompany = !!input.companyId && p.associatedcompanyid === input.companyId;
         if (same && (input.lastname || sameCompany)) found.set(c.id, c);
@@ -494,10 +510,14 @@ export class HubSpotAdapter implements CrmAdapter {
   ): Promise<{ contactIds: string[]; companyId?: string }> {
     try {
       const [contactsRes, companiesRes] = await Promise.all([
-        this.client.get(`/crm/v3/objects/deals/${dealId}/associations/contacts`).catch(() => null),
-        this.client.get(`/crm/v3/objects/deals/${dealId}/associations/companies`).catch(() => null),
+        this.client
+          .get<HubSpotResults<HubSpotAssociationRef>>(`/crm/v3/objects/deals/${dealId}/associations/contacts`)
+          .catch(() => null),
+        this.client
+          .get<HubSpotResults<HubSpotAssociationRef>>(`/crm/v3/objects/deals/${dealId}/associations/companies`)
+          .catch(() => null),
       ]);
-      const contactIds: string[] = (contactsRes?.data?.results || []).map((r: any) => r.id);
+      const contactIds: string[] = (contactsRes?.data?.results || []).map((r) => r.id);
       const companyId: string | undefined = companiesRes?.data?.results?.[0]?.id;
       return { contactIds, companyId };
     } catch {
@@ -510,13 +530,13 @@ export class HubSpotAdapter implements CrmAdapter {
     // del deal (dealname, description, etc.) — no incluye nombres de contacto
     // ni de empresa asociados. Por eso intentamos primero el match directo,
     // y si vacía, caemos a buscar contactos por el query y traemos sus deals.
-    const direct = await this.client.post("/crm/v3/objects/deals/search", {
+    const direct = await this.client.post<HubSpotResults<HubSpotObject<DealProps>>>("/crm/v3/objects/deals/search", {
       query,
       properties: ["dealname", "dealstage", "amount"],
       limit: 5,
     });
 
-    const directRaw = (direct.data.results || []) as any[];
+    const directRaw = direct.data.results || [];
     if (directRaw.length > 0) {
       const enriched = await Promise.all(
         directRaw.map(async (d) => {
@@ -537,12 +557,12 @@ export class HubSpotAdapter implements CrmAdapter {
 
     // Fallback: buscar contactos cuyo nombre/empresa/email matcheen el query
     // y traer los deals asociados a ellos.
-    const contactsRes = await this.client.post("/crm/v3/objects/contacts/search", {
+    const contactsRes = await this.client.post<HubSpotResults<HubSpotObject>>("/crm/v3/objects/contacts/search", {
       query,
       properties: ["firstname", "lastname", "company"],
       limit: 5,
     });
-    const contactIds: string[] = (contactsRes.data.results || []).map((c: any) => c.id);
+    const contactIds: string[] = (contactsRes.data.results || []).map((c) => c.id);
     if (contactIds.length === 0) return [];
 
     // Mapeo deal_id → primer contact_id que lo trajo, para devolverlo al agente
@@ -566,12 +586,12 @@ export class HubSpotAdapter implements CrmAdapter {
 
     if (dealToContact.size === 0) return [];
 
-    const batch = await this.client.post("/crm/v3/objects/deals/batch/read", {
+    const batch = await this.client.post<HubSpotResults<HubSpotObject<DealProps>>>("/crm/v3/objects/deals/batch/read", {
       properties: ["dealname", "dealstage", "amount"],
       inputs: Array.from(dealToContact.keys()).slice(0, 10).map((id) => ({ id })),
     });
 
-    const dealsRaw = (batch.data?.results || []) as any[];
+    const dealsRaw = batch.data?.results || [];
     return Promise.all(
       dealsRaw.map(async (d) => {
         const assoc = await this.getDealAssociations(d.id);
@@ -590,7 +610,7 @@ export class HubSpotAdapter implements CrmAdapter {
 
   async createDeal(input: { contactId: string; name: string; amount?: number; stage?: DealStage }): Promise<Deal> {
     const stageId = this.resolveStage(input.stage || "saludo");
-    const properties: Record<string, any> = {
+    const properties: Record<string, string> = {
       dealname: input.name,
       dealstage: stageId,
     };
@@ -609,7 +629,7 @@ export class HubSpotAdapter implements CrmAdapter {
       // si falla, seguimos sin company association
     }
 
-    const associations: Array<{ to: { id: string }; types: any[] }> = [
+    const associations: HubSpotAssociationInput[] = [
       {
         to: { id: input.contactId },
         // 3 = deal-to-contact (HUBSPOT_DEFINED)
@@ -652,7 +672,7 @@ export class HubSpotAdapter implements CrmAdapter {
       throw new Error("createNote requiere al menos contactId o dealId");
     }
     // HubSpot associationTypeIds (HUBSPOT_DEFINED): note↔contact = 202, note↔deal = 214.
-    const associations: any[] = [];
+    const associations: HubSpotAssociationInput[] = [];
     if (input.contactId) {
       associations.push({
         to: { id: input.contactId },
@@ -676,11 +696,11 @@ export class HubSpotAdapter implements CrmAdapter {
       if (input.dealId && input.contactId) return "Nota registrada en el deal y en el contacto";
       if (input.dealId) return "Nota registrada en el deal";
       return "Nota registrada en el contacto";
-    } catch (err: any) {
+    } catch (err) {
       // Some HubSpot plans don't expose `crm.objects.notes.write`. The note
       // body is already persisted in `activity_log` by the agent loop, so we
       // return a graceful success to keep the conversation moving.
-      if (err?.response?.status === 403) {
+      if ((err as HttpErrorLike)?.response?.status === 403) {
         return "Nota registrada (HubSpot no expone el scope de notas en este plan; queda en el log de actividad)";
       }
       throw err;
@@ -701,7 +721,7 @@ export class HubSpotAdapter implements CrmAdapter {
       ? new Date(`${input.toDate}T23:59:59-05:00`).getTime()
       : new Date(input.toDate).getTime();
 
-    const filters: any[] = [
+    const filters: HubSpotFilter[] = [
       { propertyName: "hs_timestamp", operator: "GTE", value: String(fromTs) },
       { propertyName: "hs_timestamp", operator: "LTE", value: String(toTs) },
     ];
@@ -712,21 +732,21 @@ export class HubSpotAdapter implements CrmAdapter {
       filters.push({ propertyName: "hubspot_owner_id", operator: "EQ", value: this.ownerId });
     }
 
-    const searchRes = await this.client.post("/crm/v3/objects/tasks/search", {
+    const searchRes = await this.client.post<HubSpotResults<HubSpotObject>>("/crm/v3/objects/tasks/search", {
       filterGroups: [{ filters }],
       properties: ["hs_task_subject", "hs_timestamp", "hs_task_status", "hubspot_owner_id"],
       sorts: [{ propertyName: "hs_timestamp", direction: "ASCENDING" }],
       limit: 50,
     });
 
-    const tasksRaw = (searchRes.data.results || []) as any[];
+    const tasksRaw = searchRes.data.results || [];
     if (tasksRaw.length === 0) return [];
 
     // Traer asociaciones (deal/contact/company) por tarea en paralelo. Cada
     // batch read solo soporta un tipo de target, así que disparamos 3 batches.
     const buildBatch = (objectType: string) =>
       this.client
-        .post(`/crm/v3/associations/tasks/${objectType}/batch/read`, {
+        .post<HubSpotResults<HubSpotAssociationBatchRow>>(`/crm/v3/associations/tasks/${objectType}/batch/read`, {
           inputs: tasksRaw.map((t) => ({ id: t.id })),
         })
         .catch(() => null);
@@ -737,7 +757,7 @@ export class HubSpotAdapter implements CrmAdapter {
       buildBatch("companies"),
     ]);
 
-    const firstIdByTask = (res: any): Map<string, string> => {
+    const firstIdByTask = (res: AxiosResponse<HubSpotResults<HubSpotAssociationBatchRow>> | null): Map<string, string> => {
       const map = new Map<string, string>();
       for (const r of res?.data?.results || []) {
         const taskId = r.from?.id;
@@ -806,7 +826,7 @@ export class HubSpotAdapter implements CrmAdapter {
       const raw = t.properties?.hs_timestamp;
       const ts = raw != null && /^\d+$/.test(String(raw))
         ? Number(raw)
-        : new Date(raw as any).getTime();
+        : new Date(raw as string).getTime();
       // Formateamos la fecha/hora en Bogotá para que el agente la presente al
       // comercial en su zona horaria operativa.
       const dueDate = new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/Bogota" });
@@ -837,11 +857,12 @@ export class HubSpotAdapter implements CrmAdapter {
         properties: { hs_task_status: "COMPLETED" },
       });
       return "Tarea marcada como completada";
-    } catch (err: any) {
-      if (err?.response?.status === 404) {
+    } catch (err) {
+      const e = err as HttpErrorLike;
+      if (e?.response?.status === 404) {
         return "No encontré esa tarea en HubSpot";
       }
-      if (err?.response?.status === 403) {
+      if (e?.response?.status === 403) {
         return "Tarea marcada como completada (HubSpot no expone el scope de tareas en este plan; queda en el log de actividad)";
       }
       throw err;
@@ -895,7 +916,7 @@ export class HubSpotAdapter implements CrmAdapter {
     if (contactId) contactIdSet.add(contactId);
     for (const cid of dealContactIds) contactIdSet.add(cid);
 
-    const associations: Array<{ to: { id: string }; types: any[] }> = [];
+    const associations: HubSpotAssociationInput[] = [];
     for (const cid of contactIdSet) {
       associations.push({
         to: { id: cid },
@@ -978,15 +999,16 @@ export class HubSpotAdapter implements CrmAdapter {
       if (dealCompanyId) targets.push("empresa");
       const where = targets.length ? ` (asociada al ${targets.join(", ")})` : "";
       return `Tarea "${title}" creada en HubSpot${where}`;
-    } catch (err: any) {
-      if (err?.response?.status === 403) {
+    } catch (err) {
+      const e = err as HttpErrorLike;
+      if (e?.response?.status === 403) {
         return `Tarea "${title}" registrada (HubSpot no expone el scope de tareas en este plan; queda en el log de actividad)`;
       }
       // Exponemos el motivo de validación de HubSpot; si no, queda un opaco
       // "Request failed with status code 400" en el activity_log.
-      const hsMsg = err?.response?.data?.message;
+      const hsMsg = e?.response?.data?.message;
       if (hsMsg) {
-        throw new Error(`HubSpot ${err.response.status}: ${hsMsg}`);
+        throw new Error(`HubSpot ${e.response?.status}: ${hsMsg}`);
       }
       throw err;
     }

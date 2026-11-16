@@ -22,10 +22,26 @@ function count(v: unknown): number | null {
   return Array.isArray(v) ? v.length : null;
 }
 
+// Formas de los resultados de herramientas que se resumen (JSON de los
+// adapters). Todo opcional: el resultado puede ser texto o venir incompleto.
+type Named = { id?: string; name?: string };
+type CompanyCheck = { query?: string; status?: string; matches?: Named[] };
+type ToolResultData = Named & {
+  status?: string;
+  contact?: Named;
+  company?: Named;
+  matches?: Named[];
+};
+
 // Resume una llamada a herramienta en una línea legible.
-export function summarizeTool(name: string, input: any, result: string, isError: boolean): ToolTrace {
+export function summarizeTool(
+  name: string,
+  input: Record<string, unknown>,
+  result: string,
+  isError: boolean
+): ToolTrace {
   if (isError) return `${name}: ${short(result, 100)}`;
-  let data: any = result;
+  let data: unknown = result;
   try {
     data = JSON.parse(result);
   } catch {
@@ -36,33 +52,38 @@ export function summarizeTool(name: string, input: any, result: string, isError:
     case "search_contact":
     case "search_deal": {
       const n = count(data);
-      const ids = Array.isArray(data) ? data.slice(0, 3).map((x: any) => `${x.name || "?"} #${x.id}`).join(", ") : "";
+      const ids = Array.isArray(data)
+        ? (data as Named[]).slice(0, 3).map((x) => `${x.name || "?"} #${x.id}`).join(", ")
+        : "";
       return `${name}("${short(String(input?.query ?? ""), 40)}") → ${n ?? "?"} resultado(s)${ids ? `: ${ids}` : ""}`;
     }
     case "search_company": {
       if (!Array.isArray(data)) return `${name} → ${short(String(result))}`;
-      return `search_company → ${data
-        .map((r: any) => `${r.query}: ${r.status}${r.matches?.[0] ? ` (${r.matches[0].name} #${r.matches[0].id})` : ""}`)
+      return `search_company → ${(data as CompanyCheck[])
+        .map((r) => `${r.query}: ${r.status}${r.matches?.[0] ? ` (${r.matches[0].name} #${r.matches[0].id})` : ""}`)
         .join("; ")}`;
     }
     case "create_contact":
     case "create_company": {
-      if (data?.status === "created") {
-        const o = data.contact || data.company;
+      const d = data as ToolResultData | null;
+      if (d?.status === "created") {
+        const o = d.contact || d.company;
         return `${name} → creado: ${o?.name} #${o?.id}`;
       }
-      if (data?.status === "possible_duplicate") {
-        return `${name} → NO creado, posible duplicado: ${(data.matches || [])
+      if (d?.status === "possible_duplicate") {
+        return `${name} → NO creado, posible duplicado: ${(d.matches || [])
           .slice(0, 3)
-          .map((m: any) => `${m.name} #${m.id}`)
+          .map((m) => `${m.name} #${m.id}`)
           .join(", ")}`;
       }
       return `${name} → ${short(String(result))}`;
     }
     case "update_contact":
       return `update_contact #${input?.contact_id} → actualizado`;
-    case "create_deal":
-      return `create_deal → ${data?.name || "negocio"} #${data?.id ?? "?"}`;
+    case "create_deal": {
+      const d = data as ToolResultData | null;
+      return `create_deal → ${d?.name || "negocio"} #${d?.id ?? "?"}`;
+    }
     case "list_tasks":
       return `list_tasks → ${count(data) ?? "?"} tarea(s)`;
     default:

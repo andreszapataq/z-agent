@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import axios from "axios";
+import type { HttpErrorLike } from "@/lib/safe-error";
+import type { HubSpotOwner, HubSpotResults } from "@/lib/crm/hubspot-types";
 import { isAuthenticated } from "@/lib/admin-auth";
 import { getTenant } from "@/lib/tenants";
 
@@ -27,11 +29,11 @@ export async function GET(
   }
 
   try {
-    const res = await axios.get("https://api.hubapi.com/crm/v3/owners", {
+    const res = await axios.get<HubSpotResults<HubSpotOwner>>("https://api.hubapi.com/crm/v3/owners", {
       headers: { Authorization: `Bearer ${tenant.hubspot_token}` },
       params: { limit: 100 },
     });
-    const owners = (res.data.results || []).map((o: any) => ({
+    const owners = (res.data.results || []).map((o) => ({
       id: o.id,
       userId: o.userId,
       email: o.email,
@@ -39,7 +41,8 @@ export async function GET(
       archived: o.archived,
     }));
     return NextResponse.json({ owners });
-  } catch (err: any) {
+  } catch (error) {
+    const err = error as HttpErrorLike;
     console.error("[hubspot-owners]", err?.response?.data || err.message);
     return NextResponse.json(
       {
