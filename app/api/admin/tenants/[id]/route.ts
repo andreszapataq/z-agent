@@ -61,7 +61,7 @@ export async function PUT(
     // Forzamos el id de la URL — no permitimos cambiarlo desde el body
     const saved = await saveTenant({ ...data, id, name });
     return NextResponse.json(toAdminTenant(saved));
-  } catch (err: any) {
+  } catch (err) {
     console.error("[admin/tenants PUT]", safeError(err));
     return NextResponse.json({ error: "Error guardando tenant" }, { status: 500 });
   }
@@ -78,7 +78,7 @@ export async function DELETE(
   try {
     await deleteTenant(id);
     return NextResponse.json({ ok: true });
-  } catch (err: any) {
+  } catch (err) {
     console.error("[admin/tenants DELETE]", safeError(err));
     return NextResponse.json({ error: "Error eliminando tenant" }, { status: 500 });
   }

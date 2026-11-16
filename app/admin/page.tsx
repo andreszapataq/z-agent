@@ -76,8 +76,11 @@ export default function AdminPage() {
   const [loadingOwners, setLoadingOwners] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
 
+  // Solo al montar. loadTenants no está memoizada (se recrea en cada render):
+  // ponerla como dependencia dispararía la carga en cada render.
   useEffect(() => {
     loadTenants();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function loadTenants() {
@@ -95,7 +98,7 @@ export default function AdminPage() {
       setTenants(data);
       setAuthed(true);
       loadMsgsToday();
-    } catch (e) {
+    } catch {
       showToast("Error cargando clientes", "error");
     }
   }
@@ -255,7 +258,11 @@ export default function AdminPage() {
 
     // Normalizar: strings vacíos → null, stage_map vacío → null.
     // Un token vacío (null) significa "no cambiarlo": el servidor conserva el actual.
-    const payload: any = { ...form };
+    const payload: Record<string, unknown> = {
+      ...form,
+      stage_map: Object.keys(form.stage_map || {}).length ? form.stage_map : null,
+      authorized_numbers: parseNumberList(form.authorized_numbers),
+    };
     for (const k of [
       "whatsapp_phone_id",
       "owner_number",
@@ -268,8 +275,6 @@ export default function AdminPage() {
     ]) {
       if (!payload[k]) payload[k] = null;
     }
-    if (!Object.keys(payload.stage_map || {}).length) payload.stage_map = null;
-    payload.authorized_numbers = parseNumberList(form.authorized_numbers);
 
     try {
       const res = await fetch(url, {
@@ -281,8 +286,8 @@ export default function AdminPage() {
       showToast(editing ? "Cliente actualizado" : "Cliente agregado");
       setModalOpen(false);
       loadTenants();
-    } catch (e: any) {
-      showToast(`Error: ${e.message}`, "error");
+    } catch (e) {
+      showToast(`Error: ${(e as Error).message}`, "error");
     }
   }
 

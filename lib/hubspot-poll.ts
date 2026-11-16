@@ -1,4 +1,6 @@
 import axios from "axios";
+import type { HttpErrorLike } from "./safe-error";
+import type { HubSpotAssociationInput, HubSpotAssociationRef, HubSpotResults } from "./crm/hubspot-types";
 import { createAdminClient } from "./supabase";
 import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
@@ -48,7 +50,8 @@ export async function pollProposalEmails(): Promise<EmailSyncResult> {
       const { synced, deals } = await syncTenantEmails(tenant);
       result.synced += synced;
       if (deals.length > 0) result.dealsByTenant[tenant.id] = deals;
-    } catch (e: any) {
+    } catch (err) {
+      const e = err as HttpErrorLike;
       const method = e?.config?.method?.toUpperCase();
       const url = e?.config?.url;
       const status = e?.response?.status;
@@ -132,10 +135,10 @@ async function syncTenantEmails(tenant: Tenant): Promise<{ synced: number; deals
       || "Contacto sin nombre";
 
     // Buscar deals abiertos asociados al contacto
-    const dealAssoc = await client.get(
+    const dealAssoc = await client.get<HubSpotResults<HubSpotAssociationRef>>(
       `/crm/v3/objects/contacts/${contactId}/associations/deals`
     );
-    const dealIds: string[] = (dealAssoc.data?.results || []).map((d: any) => d.id);
+    const dealIds: string[] = (dealAssoc.data?.results || []).map((d) => d.id);
 
     let dealId: string | null = null;
     let dealAction: "moved" | "created" | "already_at_stage" = "created";
@@ -192,7 +195,7 @@ async function syncTenantEmails(tenant: Tenant): Promise<{ synced: number; deals
         // si falla, seguimos sin company association
       }
 
-      const dealAssociations: Array<{ to: { id: string }; types: any[] }> = [
+      const dealAssociations: HubSpotAssociationInput[] = [
         {
           to: { id: contactId },
           types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 3 }],
@@ -299,7 +302,8 @@ export async function pollProposalNotifications(
   for (const tenant of tenants as Tenant[]) {
     try {
       result.notified += await pollTenant(tenant, extraDeals[tenant.id] || []);
-    } catch (e: any) {
+    } catch (err) {
+      const e = err as HttpErrorLike;
       const method = e?.config?.method?.toUpperCase();
       const url = e?.config?.url;
       const status = e?.response?.status;
@@ -434,7 +438,8 @@ async function pollTenant(tenant: Tenant, extraDeals: TouchedDeal[] = []): Promi
         dueTime: "09:00",
       });
       taskOk = true;
-    } catch (taskErr: any) {
+    } catch (err) {
+      const taskErr = err as HttpErrorLike;
       taskError = taskErr?.response?.data
         ? JSON.stringify(taskErr.response.data)
         : taskErr?.message || String(taskErr);

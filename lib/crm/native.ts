@@ -23,7 +23,24 @@ import {
   routePhones,
 } from "./contact-rules";
 
-function rowToContact(c: any): Contact {
+// Filas de Supabase que leemos (el cliente no tiene tipos generados).
+type ContactRow = {
+  id: string;
+  full_name: string;
+  company?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  position?: string | null;
+};
+type TaskRow = {
+  id: string;
+  title: string;
+  due_date: string;
+  status: string;
+  contacts?: { full_name?: string | null; company?: string | null } | null;
+};
+
+function rowToContact(c: ContactRow): Contact {
   return {
     id: c.id,
     name: c.full_name,
@@ -90,7 +107,7 @@ export class NativeAdapter implements CrmAdapter {
         const seen = new Set<string>();
         const candidates: Company[] = [];
         for (const row of data || []) {
-          const c = (row as any).company as string | null;
+          const c = (row as { company: string | null }).company;
           if (c && !seen.has(c)) {
             seen.add(c);
             candidates.push({ id: c, name: c });
@@ -313,13 +330,13 @@ export class NativeAdapter implements CrmAdapter {
     const { data, error } = await query;
     if (error) throw error;
 
-    return (data || []).map((t: any) => ({
+    return ((data || []) as TaskRow[]).map((t) => ({
       id: t.id,
       title: t.title,
       dueDate: t.due_date,
       status: t.status,
-      contactName: t.contacts?.full_name,
-      companyName: t.contacts?.company,
+      contactName: t.contacts?.full_name ?? undefined,
+      companyName: t.contacts?.company ?? undefined,
     }));
   }
 

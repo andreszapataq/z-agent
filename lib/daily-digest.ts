@@ -3,6 +3,7 @@ import { credsFromTenant, sendWhatsAppMessage } from "./whatsapp";
 import { Tenant } from "./tenants";
 import { getCrmAdapter } from "./crm";
 import { TaskItem } from "./crm/types";
+import type { HttpErrorLike } from "./safe-error";
 
 type DigestResult = {
   scanned: number;
@@ -39,7 +40,8 @@ export async function pollDailyDigests(): Promise<DigestResult> {
       const status = await sendTenantDigest(tenant);
       if (status === "sent") result.sent++;
       else result.skipped++;
-    } catch (e: any) {
+    } catch (err) {
+      const e = err as HttpErrorLike;
       const detail = e?.response?.data
         ? JSON.stringify(e.response.data)
         : e?.message || String(e);
@@ -108,7 +110,8 @@ async function sendTenantDigest(tenant: Tenant): Promise<"sent" | "skipped"> {
     if (!creds) throw new Error("Tenant sin credenciales de WhatsApp");
     await sendWhatsAppMessage(creds, tenant.owner_number!, body);
     waOk = true;
-  } catch (waErr: any) {
+  } catch (err) {
+    const waErr = err as HttpErrorLike;
     waError = waErr?.response?.data
       ? JSON.stringify(waErr.response.data)
       : waErr?.message || String(waErr);

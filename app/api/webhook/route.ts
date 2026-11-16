@@ -9,7 +9,7 @@ import {
   verifyKapsoSignature,
   verifyMetaSignature,
 } from "@/lib/whatsapp";
-import { toAgentInput } from "@/lib/inbound";
+import { toAgentInput, type WhatsAppWebhookBody } from "@/lib/inbound";
 import { firstTimeSeen } from "@/lib/dedupe";
 import { isAuthorizedSender } from "@/lib/authorized";
 import { checkLimit, webhookLimiter } from "@/lib/ratelimit";
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     return new NextResponse("Forbidden", { status: 403 });
   }
 
-  let body: any;
+  let body: WhatsAppWebhookBody;
   try {
     body = JSON.parse(rawBody);
   } catch {
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-async function processIncomingMessage(body: any) {
+async function processIncomingMessage(body: WhatsAppWebhookBody) {
   const change = body?.entry?.[0]?.changes?.[0];
   const message = change?.value?.messages?.[0];
   const phoneNumberId = change?.value?.metadata?.phone_number_id;

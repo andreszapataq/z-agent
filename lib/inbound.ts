@@ -1,4 +1,5 @@
 import { WhatsAppCreds, downloadMedia } from "./whatsapp";
+import type { HttpErrorLike } from "./safe-error";
 
 // ============================================================
 // Mensajes entrantes → entrada del agente
@@ -20,6 +21,36 @@ export type AgentInput = {
 
 export type InboundResult = { ok: true; input: AgentInput } | { ok: false; reply: string };
 
+// Forma de los mensajes de la Cloud API que leemos (Meta directo o Kapso
+// reenviando el payload de Meta). Solo los campos que usa el código.
+export type WhatsAppSharedContact = {
+  name?: { formatted_name?: string; prefix?: string; first_name?: string; middle_name?: string; last_name?: string };
+  org?: { title?: string; company?: string; department?: string };
+  phones?: Array<{ phone?: string; wa_id?: string; type?: string }>;
+  emails?: Array<{ email?: string }>;
+  addresses?: Array<{ street?: string; city?: string; state?: string }>;
+};
+
+export type WhatsAppInboundMessage = {
+  id?: string;
+  from: string;
+  type?: string;
+  text?: { body?: string };
+  contacts?: WhatsAppSharedContact[];
+  image?: { id?: string; caption?: string };
+  button?: { text?: string };
+  interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } };
+};
+
+// Cuerpo del webhook: entry[].changes[].value con los mensajes y el número.
+export type WhatsAppWebhookBody = {
+  entry?: Array<{
+    changes?: Array<{
+      value?: { messages?: WhatsAppInboundMessage[]; metadata?: { phone_number_id?: string } };
+    }>;
+  }>;
+};
+
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 // Límite de tamaño por imagen de la API de Claude.
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -30,7 +61,7 @@ export const UNSUPPORTED_REPLY =
 export const VOICE_NOTE_REPLY =
   "Todavía no puedo escuchar notas de voz 🙉. Para hablarme, usa el micrófono del teclado (el de dictado, no el de WhatsApp): tu voz queda escrita y me llega como texto.";
 
-export async function toAgentInput(message: any, creds: WhatsAppCreds): Promise<InboundResult> {
+export async function toAgentInput(message: WhatsAppInboundMessage, creds: WhatsAppCreds): Promise<InboundResult> {
   switch (message?.type) {
     case "text": {
       const body = String(message.text?.body || "").trim();
@@ -68,7 +99,8 @@ export async function toAgentInput(message: any, creds: WhatsAppCreds): Promise<
           ok: true,
           input: { text, images: [{ mediaType: mimeType as AgentImage["mediaType"], data: data.toString("base64") }] },
         };
-      } catch (e: any) {
+      } catch (err) {
+        const e = err as HttpErrorLike;
         console.error("[inbound] image:", e?.response?.status || e?.message);
         return { ok: false, reply: "No pude descargar la foto. ¿Me la envías de nuevo?" };
       }
@@ -93,7 +125,7 @@ export async function toAgentInput(message: any, creds: WhatsAppCreds): Promise<
 
 // Convierte la tarjeta de contacto de WhatsApp (vCard ya parseada por Meta) en
 // texto legible para el agente.
-export function formatSharedContacts(contacts: any[]): string {
+export function formatSharedContacts(contacts: WhatsAppSharedContact[]): string {
   const blocks = (contacts || []).slice(0, 10).map((c) => {
     const lines: string[] = [];
     const name =
